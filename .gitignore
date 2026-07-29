@@ -1,0 +1,13 @@
+# Dependencies are reproducible from package.json and must never be committed.
+node_modules/
+
+# Generated application output.
+dist/
+coverage/
+
+# Local secrets and operating-system files.
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
