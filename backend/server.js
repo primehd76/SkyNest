@@ -12,15 +12,19 @@ const app = express();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const PORT = Number(process.env.PORT || 4000);
 const STORAGE_ROOT = path.resolve(process.env.STORAGE_ROOT || "/app/storage");
+const UPLOAD_TEMP_ROOT = path.join(STORAGE_ROOT, ".uploads");
 const JWT_SECRET = process.env.JWT_SECRET;
 
 if (!JWT_SECRET) throw new Error("JWT_SECRET must be set");
 
 app.use(cors({ origin: process.env.CORS_ORIGIN || true }));
 app.use(express.json());
-// Memory storage makes the quota check exact before anything is written to shared storage.
-// For very large, multi-gigabyte files, replace this with a streamed temporary-file approach.
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 * 1024 } });
+// Staging uploads inside the mounted storage filesystem avoids exhausting Node.js memory,
+// while letting the verified file be moved atomically into its shared folder.
+const upload = multer({
+  storage: multer.diskStorage({ destination: (_req, _file, done) => done(null, UPLOAD_TEMP_ROOT) }),
+  limits: { fileSize: 20 * 1024 * 1024 * 1024 },
+});
 
 function cleanName(value, label = "Name") {
   const name = String(value || "").trim();
@@ -152,11 +156,17 @@ app.post("/api/folders/:folderId/upload", requireAuth, requireFolderPermission, 
     if (!req.file) throw new Error("Choose a file to upload.");
     const diskPath = folderPath(req.folder.folder_name);
     const usedBytes = await getDirectorySize(diskPath);
-    if (usedBytes + req.file.size > Number(req.folder.quota_limit_bytes)) return res.status(413).json({ error: "Upload rejected: this folder quota would be exceeded." });
+    if (usedBytes + req.file.size > Number(req.folder.quota_limit_bytes)) {
+      await fs.unlink(req.file.path);
+      return res.status(413).json({ error: "Upload rejected: this folder quota would be exceeded." });
+    }
     const filename = await getUniqueFilename(diskPath, req.file.originalname);
-    await fs.writeFile(path.join(diskPath, filename), req.file.buffer, { flag: "wx" });
+    await fs.rename(req.file.path, path.join(diskPath, filename));
     res.status(201).json({ name: filename });
-  } catch (error) { next(error); }
+  } catch (error) {
+    await fs.unlink(req.file?.path).catch(() => {});
+    next(error);
+  }
 });
 
 app.get("/api/folders/:folderId/files/:filename/download", requireAuth, requireFolderPermission, requireCapability("can_read"), async (req, res, next) => {
@@ -208,6 +218,49 @@ app.post("/api/admin/folders", requireAuth, requireAdmin, async (req, res, next)
     res.status(201).json(result.rows[0]);
   } catch (error) { next(error); }
 });
+app.patch("/api/admin/folders/:folderId", requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const folder = await getFolder(req.params.folderId);
+    const name = cleanName(req.body.folderName ?? folder.folder_name, "Folder name");
+    const quota = Number(req.body.quotaLimitBytes ?? folder.quota_limit_bytes);
+    if (!Number.isSafeInteger(quota) || quota < 0) throw new Error("Quota must be a non-negative whole number of bytes.");
+
+    const currentPath = folderPath(folder.folder_name);
+    const usedBytes = await getDirectorySize(currentPath);
+    if (quota < usedBytes) throw new Error(`Quota cannot be lower than the ${usedBytes} bytes currently stored in this folder.`);
+
+    const renamed = name !== folder.folder_name;
+    const nextPath = folderPath(name);
+    if (renamed) {
+      try {
+        await fs.access(nextPath);
+        throw new Error("A storage folder with that name already exists.");
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+    if (renamed) await fs.rename(currentPath, nextPath);
+    try {
+      const result = await pool.query(
+        "UPDATE shared_folders SET folder_name = $1, quota_limit_bytes = $2 WHERE id = $3 RETURNING *",
+        [name, quota, folder.id]
+      );
+      res.json(result.rows[0]);
+    } catch (error) {
+      if (renamed) await fs.rename(nextPath, currentPath).catch(() => {});
+      throw error;
+    }
+  } catch (error) { next(error); }
+});
+app.delete("/api/admin/folders/:folderId", requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const folder = await getFolder(req.params.folderId);
+    // rmdir intentionally refuses a non-empty directory, so delete cannot remove files by accident.
+    await fs.rmdir(folderPath(folder.folder_name));
+    await pool.query("DELETE FROM shared_folders WHERE id = $1", [folder.id]);
+    res.status(204).end();
+  } catch (error) { next(error); }
+});
 app.get("/api/admin/folders/:folderId/permissions", requireAuth, requireAdmin, async (req, res, next) => { try { res.json((await pool.query("SELECT user_id, can_read, can_write, can_delete FROM folder_permissions WHERE folder_id = $1", [req.params.folderId])).rows); } catch (e) { next(e); } });
 app.put("/api/admin/folders/:folderId/permissions/:userId", requireAuth, requireAdmin, async (req, res, next) => {
   try {
@@ -221,10 +274,13 @@ app.put("/api/admin/folders/:folderId/permissions/:userId", requireAuth, require
 
 app.use((error, _req, res, _next) => {
   console.error(error);
+  if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") return res.status(413).json({ error: "Upload exceeds the 20 GB file-size limit." });
   if (error.code === "23505") return res.status(409).json({ error: "That name already exists." });
+  if (error.code === "ENOTEMPTY") return res.status(409).json({ error: "Folder must be empty before it can be deleted." });
   res.status(500).json({ error: error.message || "Unexpected server error." });
 });
 
 await fs.mkdir(STORAGE_ROOT, { recursive: true });
+await fs.mkdir(UPLOAD_TEMP_ROOT, { recursive: true });
 await createInitialAdmin();
 app.listen(PORT, () => console.log(`SkyNest API listening on ${PORT}`));

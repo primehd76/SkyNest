@@ -121,6 +121,33 @@ function Admin({ token, onClose }) {
       await load();
     } catch (e) { setMessage(e.response?.data?.error || e.message); }
   }
+  async function renameFolder() {
+    if (!selected) return;
+    const folderName = prompt("New folder name", selected.folder_name);
+    if (!folderName || folderName === selected.folder_name) return;
+    try {
+      const { data } = await api.patch(`/admin/folders/${selected.id}`, { folderName, quotaLimitBytes: Number(selected.quota_limit_bytes) }, { headers });
+      setSelected(data); await load(); setMessage("Folder renamed.");
+    } catch (e) { setMessage(e.response?.data?.error || e.message); }
+  }
+  async function changeQuota() {
+    if (!selected) return;
+    const value = prompt("New quota in GB", (Number(selected.quota_limit_bytes) / 1024 ** 3).toString());
+    if (value === null) return;
+    const quotaLimitBytes = Math.round(Number(value) * 1024 ** 3);
+    if (!Number.isSafeInteger(quotaLimitBytes) || quotaLimitBytes < 0) return setMessage("Quota must be a non-negative number of GB.");
+    try {
+      const { data } = await api.patch(`/admin/folders/${selected.id}`, { folderName: selected.folder_name, quotaLimitBytes }, { headers });
+      setSelected(data); await load(); setMessage("Folder quota updated.");
+    } catch (e) { setMessage(e.response?.data?.error || e.message); }
+  }
+  async function deleteFolder() {
+    if (!selected || !confirm(`Delete folder ${selected.folder_name}? It must be empty and this cannot be undone.`)) return;
+    try {
+      await api.delete(`/admin/folders/${selected.id}`, { headers });
+      setSelected(null); setPermissions([]); await load(); setMessage("Folder deleted.");
+    } catch (e) { setMessage(e.response?.data?.error || e.message); }
+  }
   const permissionFor = user => permissions.find(p => p.user_id === user.id) || { can_read: false, can_write: false, can_delete: false };
   async function savePermission(user, field, checked) {
     const current = permissionFor(user); const next = { canRead: current.can_read, canWrite: current.can_write, canDelete: current.can_delete };
@@ -132,7 +159,7 @@ function Admin({ token, onClose }) {
   const diskPercent = disk ? (disk.usedBytes / disk.totalBytes * 100) : 0;
   return <main className="mx-auto max-w-7xl p-5"><div className="mb-6 flex items-center justify-between"><h1 className="flex items-center gap-2 text-2xl font-bold"><Shield/> Administration</h1><button onClick={onClose} className="rounded p-2 hover:bg-slate-200"><X/></button></div>{message && <p className="mb-4 rounded bg-red-50 p-3 text-red-700">{message}</p>}
     <div className="grid gap-5 lg:grid-cols-3"><Panel title="Server disk status"><HardDrive className="mb-2 text-sky-600"/>{disk && <><p className="text-2xl font-bold">{bytes(disk.usedBytes)} <span className="text-sm font-normal text-slate-500">of {bytes(disk.totalBytes)}</span></p><div className="mt-3 h-3 overflow-hidden rounded bg-slate-200"><div className="h-full bg-sky-600" style={{width: `${diskPercent}%`}}/></div><p className="mt-2 text-sm text-slate-500">{bytes(disk.freeBytes)} free on the physical storage mount.</p></>}</Panel><Panel title="Create shared folder"><form onSubmit={createFolder} className="space-y-3"><input required name="name" placeholder="Folder name (e.g. vod)" className="w-full rounded border p-2"/><input required name="quotaGb" type="number" min="0" step="0.1" placeholder="Quota in GB" className="w-full rounded border p-2"/><button className="flex items-center gap-2 rounded bg-sky-600 px-3 py-2 text-white"><Plus size={16}/>Create folder</button></form></Panel><Panel title="Create user"><form onSubmit={createUser} className="space-y-3"><input required name="username" placeholder="Username" className="w-full rounded border p-2"/><input required name="password" type="password" minLength="8" placeholder="Password (8+ characters)" className="w-full rounded border p-2"/><label className="flex gap-2 text-sm"><input name="isAdmin" type="checkbox"/>Administrator</label><button className="flex items-center gap-2 rounded bg-sky-600 px-3 py-2 text-white"><Users size={16}/>Create user</button></form></Panel></div>
-    <div className="mt-5 grid gap-5 lg:grid-cols-[280px_1fr]"><Panel title="Shared folders">{folders.map(folder => <button key={folder.id} onClick={() => selectFolder(folder)} className={`mb-1 w-full rounded p-2 text-left ${selected?.id === folder.id ? "bg-sky-100" : "hover:bg-slate-100"}`}><Folder className="mr-2 inline" size={16}/>{folder.folder_name}<span className="float-right text-xs text-slate-500">{bytes(folder.quota_limit_bytes)}</span></button>)}</Panel><Panel title={selected ? `Permissions: ${selected.folder_name}` : "Select a shared folder"}>{selected && <table className="w-full text-sm"><thead><tr className="border-b text-left"><th className="p-2">User</th><th>Read</th><th>Write</th><th>Delete</th></tr></thead><tbody>{users.filter(u => !u.is_admin).map(user => { const p = permissionFor(user); return <tr key={user.id} className="border-b"><td className="p-2">{user.username}</td>{[["canRead", p.can_read], ["canWrite", p.can_write], ["canDelete", p.can_delete]].map(([field, checked]) => <td key={field}><input type="checkbox" checked={checked} onChange={e => savePermission(user, field, e.target.checked)}/></td>)}</tr>; })}</tbody></table>}</Panel></div>
+    <div className="mt-5 grid gap-5 lg:grid-cols-[280px_1fr]"><Panel title="Shared folders">{folders.map(folder => <button key={folder.id} onClick={() => selectFolder(folder)} className={`mb-1 w-full rounded p-2 text-left ${selected?.id === folder.id ? "bg-sky-100" : "hover:bg-slate-100"}`}><Folder className="mr-2 inline" size={16}/>{folder.folder_name}<span className="float-right text-xs text-slate-500">{bytes(folder.quota_limit_bytes)}</span></button>)}</Panel><Panel title={selected ? `Folder settings: ${selected.folder_name}` : "Select a shared folder"}>{selected && <><div className="mb-5 flex flex-wrap gap-2"><button onClick={renameFolder} className="rounded bg-slate-100 px-3 py-2 text-sm hover:bg-slate-200">Rename</button><button onClick={changeQuota} className="rounded bg-slate-100 px-3 py-2 text-sm hover:bg-slate-200">Set quota</button><button onClick={deleteFolder} className="rounded bg-red-600 px-3 py-2 text-sm text-white hover:bg-red-700">Delete empty folder</button></div><h3 className="mb-2 font-semibold">Permissions</h3><table className="w-full text-sm"><thead><tr className="border-b text-left"><th className="p-2">User</th><th>Read</th><th>Write</th><th>Delete</th></tr></thead><tbody>{users.filter(u => !u.is_admin).map(user => { const p = permissionFor(user); return <tr key={user.id} className="border-b"><td className="p-2">{user.username}</td>{[["canRead", p.can_read], ["canWrite", p.can_write], ["canDelete", p.can_delete]].map(([field, checked]) => <td key={field}><input type="checkbox" checked={checked} onChange={e => savePermission(user, field, e.target.checked)}/></td>)}</tr>; })}</tbody></table></>}</Panel></div>
   </main>;
 }
 
