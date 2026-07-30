@@ -7,45 +7,28 @@ SkyNest is a self-hosted shared-folder storage service. It combines a Google Dri
 - `backend/` — Express REST API, PostgreSQL ACL records, JWT authentication, filesystem storage.
 - `frontend/` — React/Vite single-page app styled with Tailwind CSS.
 - PostgreSQL holds users, shared folders, and permissions. File bytes never enter the database.
-- The host directory configured by `SKYNEST_STORAGE_PATH` is mounted into the backend as `/app/storage`.
+- The host directory `/media/DATA2TB/SkyNest` is mounted into the backend as `/app/storage`.
 
 ## Start with Docker
 
 1. Create the storage directory on the Linux host and ensure Docker can write to it:
 
    ```bash
-   sudo mkdir -p /media/it-bro/DATA2TB/SkyNest
+   sudo mkdir -p /media/DATA2TB/SkyNest
    ```
 
-2. Create a `.env` beside `docker-compose.yml`:
+2. Open `docker-compose.yml` and replace the example database password, JWT
+   secret, and initial administrator password. Storage, CPU, and RAM limits
+   are configured directly in this file. The default allocation is 1 TiB
+   storage, 16 CPUs, and 32 GB RAM across the complete stack.
 
-   ```dotenv
-   SKYNEST_STORAGE_PATH=/media/it-bro/DATA2TB/SkyNest
-   SKYNEST_STORAGE_LIMIT_BYTES=1099511627776
-   SKYNEST_BACKEND_CPUS=12.0
-   SKYNEST_BACKEND_MEMORY=24g
-   SKYNEST_DATABASE_CPUS=3.0
-   SKYNEST_DATABASE_MEMORY=7g
-   SKYNEST_FRONTEND_CPUS=1.0
-   SKYNEST_FRONTEND_MEMORY=1g
-   ```
-
-   `1099511627776` bytes is 1 TiB. The limit controls both the admin
-   dashboard and backend upload enforcement. The default container resource
-   allocation totals 16 CPUs and 32 GB RAM across the complete stack.
-
-3. Open `docker-compose.yml` and change all three example secrets before deployment:
-   - `POSTGRES_PASSWORD`
-   - the matching password in `DATABASE_URL`
-   - `JWT_SECRET` and `INITIAL_ADMIN_PASSWORD`
-
-4. Start the application:
+3. Start the application:
 
    ```bash
    docker compose up --build -d
    ```
 
-5. Visit `http://your-server:8080` and sign in with `INITIAL_ADMIN_USERNAME` / `INITIAL_ADMIN_PASSWORD`. The configured initial administrator is created only once, when the database contains no users.
+4. Visit `http://your-server:8080` and sign in with `INITIAL_ADMIN_USERNAME` / `INITIAL_ADMIN_PASSWORD`. The configured initial administrator is created only once, when the database contains no users.
 
 ## Administrator workflow
 

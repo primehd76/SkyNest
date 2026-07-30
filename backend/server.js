@@ -11,7 +11,9 @@ import archiver from "archiver";
 
 const { Pool } = pg;
 const app = express();
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const pool = process.env.DATABASE_URL
+  ? new Pool({ connectionString: process.env.DATABASE_URL })
+  : new Pool();
 const PORT = Number(process.env.PORT || 4000);
 const STORAGE_ROOT = path.resolve(process.env.STORAGE_ROOT || "/app/storage");
 const UPLOAD_TEMP_ROOT = path.join(STORAGE_ROOT, ".uploads");

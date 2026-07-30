@@ -3,12 +3,13 @@ version: "3.8"
 services:
   database:
     image: postgres:16-alpine
-    cpus: ${SKYNEST_DATABASE_CPUS:-3.0}
-    mem_limit: ${SKYNEST_DATABASE_MEMORY:-7g}
+    cpus: 3.0
+    mem_limit: 7g
     environment:
       POSTGRES_DB: skynest
       POSTGRES_USER: skynest
-      POSTGRES_PASSWORD: skynest
+      # Change this value once; PGPASSWORD below reuses it through the YAML anchor.
+      POSTGRES_PASSWORD: &database_password skynestITt7
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
@@ -22,22 +23,25 @@ services:
         ipv4_address: 172.16.72.163
   backend:
     build: ./backend
-    cpus: ${SKYNEST_BACKEND_CPUS:-12.0}
-    mem_limit: ${SKYNEST_BACKEND_MEMORY:-24g}
+    cpus: 12.0
+    mem_limit: 24g
     environment:
       PORT: 4000
-      DATABASE_URL: postgresql://skynest:skynest@database:5432/skynest
-      JWT_SECRET: replace-this-with-a-long-random-secret
+      PGHOST: database
+      PGPORT: 5432
+      PGDATABASE: skynest
+      PGUSER: skynest
+      PGPASSWORD: *database_password
+      JWT_SECRET: bidji_qoeda-belati-alibabah
       # Credentials for initial administrator
       INITIAL_ADMIN_USERNAME: admin
-      INITIAL_ADMIN_PASSWORD: admin
+      INITIAL_ADMIN_PASSWORD: adminITt7
       STORAGE_ROOT: /app/storage
       # Global SkyNest capacity. Default: 1 TiB (1024^4 bytes).
-      STORAGE_LIMIT_BYTES: ${SKYNEST_STORAGE_LIMIT_BYTES:-1099511627776}
+      STORAGE_LIMIT_BYTES: 1099511627776
       CORS_ORIGIN: http://localhost:8080
     volumes:
-      # Override SKYNEST_STORAGE_PATH in .env if the host mount changes.
-      - ${SKYNEST_STORAGE_PATH:-/media/it-bro/DATA2TB/SkyNest}:/app/storage
+      - /media/DATA2TB/SkyNest:/app/storage
     depends_on:
       database:
         condition: service_healthy
@@ -46,8 +50,8 @@ services:
         ipv4_address: 172.16.72.162
   frontend:
     build: ./frontend
-    cpus: ${SKYNEST_FRONTEND_CPUS:-1.0}
-    mem_limit: ${SKYNEST_FRONTEND_MEMORY:-1g}
+    cpus: 1.0
+    mem_limit: 1g
     ports:
       - "8080:8080"
     depends_on:
