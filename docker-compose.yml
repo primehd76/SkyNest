@@ -3,6 +3,8 @@ version: "3.8"
 services:
   database:
     image: postgres:16-alpine
+    cpus: ${SKYNEST_DATABASE_CPUS:-3.0}
+    mem_limit: ${SKYNEST_DATABASE_MEMORY:-7g}
     environment:
       POSTGRES_DB: skynest
       POSTGRES_USER: skynest
@@ -20,6 +22,8 @@ services:
         ipv4_address: 172.16.72.163
   backend:
     build: ./backend
+    cpus: ${SKYNEST_BACKEND_CPUS:-12.0}
+    mem_limit: ${SKYNEST_BACKEND_MEMORY:-24g}
     environment:
       PORT: 4000
       DATABASE_URL: postgresql://skynest:skynest@database:5432/skynest
@@ -28,9 +32,12 @@ services:
       INITIAL_ADMIN_USERNAME: admin
       INITIAL_ADMIN_PASSWORD: admin
       STORAGE_ROOT: /app/storage
+      # Global SkyNest capacity. Default: 1 TiB (1024^4 bytes).
+      STORAGE_LIMIT_BYTES: ${SKYNEST_STORAGE_LIMIT_BYTES:-1099511627776}
       CORS_ORIGIN: http://localhost:8080
     volumes:
-      - /media/DATA2TB/SkyNest:/app/storage
+      # Override SKYNEST_STORAGE_PATH in .env if the host mount changes.
+      - ${SKYNEST_STORAGE_PATH:-/media/it-bro/DATA2TB/SkyNest}:/app/storage
     depends_on:
       database:
         condition: service_healthy
@@ -39,6 +46,8 @@ services:
         ipv4_address: 172.16.72.162
   frontend:
     build: ./frontend
+    cpus: ${SKYNEST_FRONTEND_CPUS:-1.0}
+    mem_limit: ${SKYNEST_FRONTEND_MEMORY:-1g}
     ports:
       - "8080:8080"
     depends_on:

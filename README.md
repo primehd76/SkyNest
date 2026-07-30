@@ -7,29 +7,45 @@ SkyNest is a self-hosted shared-folder storage service. It combines a Google Dri
 - `backend/` — Express REST API, PostgreSQL ACL records, JWT authentication, filesystem storage.
 - `frontend/` — React/Vite single-page app styled with Tailwind CSS.
 - PostgreSQL holds users, shared folders, and permissions. File bytes never enter the database.
-- The host directory `/media/DATA2TB/SkyNest` is mounted into the backend as `/app/storage`.
+- The host directory configured by `SKYNEST_STORAGE_PATH` is mounted into the backend as `/app/storage`.
 
 ## Start with Docker
 
 1. Create the storage directory on the Linux host and ensure Docker can write to it:
 
    ```bash
-   sudo mkdir -p /media/DATA2TB/SkyNest
-   sudo chown -R 1000:1000 /media/DATA2TB/SkyNest
+   sudo mkdir -p /media/it-bro/DATA2TB/SkyNest
    ```
 
-2. Open `docker-compose.yml` and change all three example secrets before deployment:
+2. Create a `.env` beside `docker-compose.yml`:
+
+   ```dotenv
+   SKYNEST_STORAGE_PATH=/media/it-bro/DATA2TB/SkyNest
+   SKYNEST_STORAGE_LIMIT_BYTES=1099511627776
+   SKYNEST_BACKEND_CPUS=12.0
+   SKYNEST_BACKEND_MEMORY=24g
+   SKYNEST_DATABASE_CPUS=3.0
+   SKYNEST_DATABASE_MEMORY=7g
+   SKYNEST_FRONTEND_CPUS=1.0
+   SKYNEST_FRONTEND_MEMORY=1g
+   ```
+
+   `1099511627776` bytes is 1 TiB. The limit controls both the admin
+   dashboard and backend upload enforcement. The default container resource
+   allocation totals 16 CPUs and 32 GB RAM across the complete stack.
+
+3. Open `docker-compose.yml` and change all three example secrets before deployment:
    - `POSTGRES_PASSWORD`
    - the matching password in `DATABASE_URL`
    - `JWT_SECRET` and `INITIAL_ADMIN_PASSWORD`
 
-3. Start the application:
+4. Start the application:
 
    ```bash
    docker compose up --build -d
    ```
 
-4. Visit `http://your-server:8080` and sign in with `INITIAL_ADMIN_USERNAME` / `INITIAL_ADMIN_PASSWORD`. The configured initial administrator is created only once, when the database contains no users.
+5. Visit `http://your-server:8080` and sign in with `INITIAL_ADMIN_USERNAME` / `INITIAL_ADMIN_PASSWORD`. The configured initial administrator is created only once, when the database contains no users.
 
 ## Administrator workflow
 
@@ -42,11 +58,17 @@ SkyNest is a self-hosted shared-folder storage service. It combines a Google Dri
 
 - Passwords use bcrypt; API sessions use eight-hour signed JWTs.
 - Every folder operation resolves both the user ACL and physical folder safely on the backend. The UI is convenience only; it is not the security boundary.
-- Uploads calculate recursive physical folder size immediately before writing. If the new size would exceed the folder quota, the API rejects it.
+- Uploads enforce both the assigned root-folder quota and the global
+  `STORAGE_LIMIT_BYTES` capacity.
 - New upload names use `name (1).ext`, `name (2).ext`, and so on to avoid overwriting an existing file.
-- The disk widget uses `fs.promises.statfs('/app/storage')`, so it reports the actual mounted storage filesystem rather than the container filesystem.
-- Upload cancellation uses Axios `CancelToken`. The browser stops sending the request; no file is written until the complete request passes quota checks.
+- The disk widget displays the configured SkyNest limit and also reports the
+  physical capacity of the mounted filesystem.
+- Uploads use resumable 8 MiB chunks and stage partial data under
+  `/app/storage/.uploads`.
 
 ## Production considerations
 
-The included Multer memory storage makes the pre-write quota example clear and ensures no partial shared-storage files. For multi-gigabyte production uploads, implement a streamed temporary upload area and atomically move a verified file into the shared folder. Place the app behind HTTPS, use a unique long JWT secret, and configure PostgreSQL backups.
+Place the app behind HTTPS, use a unique long JWT secret, and configure
+PostgreSQL backups. For a kernel-enforced hard filesystem limit, use a
+dedicated 1 TiB partition/LVM logical volume or Linux project quotas; Docker
+bind mounts do not provide their own filesystem quota.

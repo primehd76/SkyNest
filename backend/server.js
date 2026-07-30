@@ -15,9 +15,18 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const PORT = Number(process.env.PORT || 4000);
 const STORAGE_ROOT = path.resolve(process.env.STORAGE_ROOT || "/app/storage");
 const UPLOAD_TEMP_ROOT = path.join(STORAGE_ROOT, ".uploads");
+const STORAGE_LIMIT_BYTES = process.env.STORAGE_LIMIT_BYTES
+  ? Number(process.env.STORAGE_LIMIT_BYTES)
+  : null;
 const JWT_SECRET = process.env.JWT_SECRET;
 
 if (!JWT_SECRET) throw new Error("JWT_SECRET must be set");
+if (
+  STORAGE_LIMIT_BYTES !== null &&
+  (!Number.isSafeInteger(STORAGE_LIMIT_BYTES) || STORAGE_LIMIT_BYTES <= 0)
+) {
+  throw new Error("STORAGE_LIMIT_BYTES must be a positive whole number.");
+}
 
 app.use(cors({ origin: process.env.CORS_ORIGIN || true }));
 app.use(express.json());
@@ -58,6 +67,71 @@ async function getDirectorySize(directory) {
     else if (entry.isFile()) total += (await fs.stat(entryPath)).size;
   }
   return total;
+}
+
+let applicationUsedBytesCache = null;
+async function getApplicationUsedBytes() {
+  if (applicationUsedBytesCache !== null) return applicationUsedBytesCache;
+  const entries = await fs.readdir(STORAGE_ROOT, { withFileTypes: true });
+  let total = 0;
+  for (const entry of entries) {
+    if (entry.name === ".uploads") continue;
+    const entryPath = path.join(STORAGE_ROOT, entry.name);
+    if (entry.isDirectory()) total += await getDirectorySize(entryPath);
+    else if (entry.isFile()) total += (await fs.stat(entryPath)).size;
+  }
+  applicationUsedBytesCache = total;
+  return total;
+}
+
+function adjustApplicationUsedBytes(delta) {
+  if (applicationUsedBytesCache === null) return;
+  applicationUsedBytesCache = Math.max(0, applicationUsedBytesCache + delta);
+}
+
+async function getStorageCapacity() {
+  const stats = await fs.statfs(STORAGE_ROOT);
+  const physicalTotalBytes = Number(stats.blocks * stats.bsize);
+  const physicalFreeBytes = Number(stats.bavail * stats.bsize);
+  if (STORAGE_LIMIT_BYTES === null) {
+    return {
+      totalBytes: physicalTotalBytes,
+      freeBytes: physicalFreeBytes,
+      usedBytes: physicalTotalBytes - physicalFreeBytes,
+      configuredLimitBytes: null,
+      physicalTotalBytes,
+      physicalFreeBytes,
+    };
+  }
+
+  const totalBytes = Math.min(STORAGE_LIMIT_BYTES, physicalTotalBytes);
+  const usedBytes = await getApplicationUsedBytes();
+  const freeBytes = Math.max(
+    0,
+    Math.min(totalBytes - usedBytes, physicalFreeBytes),
+  );
+  return {
+    totalBytes,
+    freeBytes,
+    usedBytes,
+    configuredLimitBytes: STORAGE_LIMIT_BYTES,
+    physicalTotalBytes,
+    physicalFreeBytes,
+  };
+}
+
+async function ensureStorageCapacity(additionalBytes = 0) {
+  const capacity = await getStorageCapacity();
+  if (
+    additionalBytes > capacity.physicalFreeBytes ||
+    capacity.usedBytes + additionalBytes > capacity.totalBytes
+  ) {
+    const error = new Error(
+      "Upload rejected: the global SkyNest storage limit would be exceeded.",
+    );
+    error.statusCode = 507;
+    throw error;
+  }
 }
 
 export async function getUniqueFilename(directory, requestedFilename) {
@@ -247,6 +321,9 @@ async function getAccessibleFolderTrail(user, folder) {
 function parseQuota(value) {
   const quota = Number(value);
   if (!Number.isSafeInteger(quota) || quota < 0) throw new Error("Quota must be a non-negative whole number of bytes.");
+  if (STORAGE_LIMIT_BYTES !== null && quota > STORAGE_LIMIT_BYTES) {
+    throw new Error("Folder quota cannot exceed the global SkyNest storage limit.");
+  }
   return quota;
 }
 
@@ -423,6 +500,7 @@ app.post("/api/folders/:folderId/uploads", requireAuth, requireFolderPermission,
   try {
     const fileSize = Number(req.body.fileSize);
     if (!Number.isSafeInteger(fileSize) || fileSize < 0) throw new Error("Invalid upload size.");
+    await ensureStorageCapacity(fileSize);
     const relativePath = cleanRelativePath(req.body.relativePath);
     const requestedFilename = relativePath.pop();
     let targetFolder = req.folder;
@@ -505,6 +583,7 @@ app.post("/api/folders/:folderId/upload-chunks", requireAuth, requireFolderPermi
     }
 
     const rootFolder = (await getFolderTrail(req.folder))[0];
+    await ensureStorageCapacity(receivedBytes);
     const usedBytes = await getDirectorySize(await getFolderDiskPath(rootFolder));
     if (usedBytes + receivedBytes > Number(rootFolder.quota_limit_bytes)) {
       await fs.unlink(partPath).catch(() => {});
@@ -516,6 +595,7 @@ app.post("/api/folders/:folderId/upload-chunks", requireAuth, requireFolderPermi
       ticket.filename,
       partPath,
     );
+    adjustApplicationUsedBytes(receivedBytes);
     const result = { done: true, receivedBytes, name: filename };
     await fs.writeFile(donePath, JSON.stringify(result));
     res.status(201).json(result);
@@ -551,6 +631,7 @@ app.delete("/api/folders/:folderId/uploads", requireAuth, requireFolderPermissio
 app.post("/api/folders/:folderId/upload", requireAuth, requireFolderPermission, requireCapability("can_write"), upload.single("file"), async (req, res, next) => {
   try {
     if (!req.file) throw new Error("Choose a file to upload.");
+    await ensureStorageCapacity(req.file.size);
     const rootFolder = (await getFolderTrail(req.folder))[0];
     const rootDiskPath = await getFolderDiskPath(rootFolder);
     const relativePath = cleanRelativePath(req.body.relativePath || req.file.originalname);
@@ -568,6 +649,7 @@ app.post("/api/folders/:folderId/upload", requireAuth, requireFolderPermission, 
       requestedFilename,
       req.file.path,
     );
+    adjustApplicationUsedBytes(req.file.size);
     res.status(201).json({ name: [...relativePath, filename].join("/") });
   } catch (error) {
     await fs.unlink(req.file?.path).catch(() => {});
@@ -623,17 +705,22 @@ app.patch("/api/folders/:folderId/files/:filename", requireAuth, requireFolderPe
 });
 
 app.delete("/api/folders/:folderId/files/:filename", requireAuth, requireFolderPermission, requireCapability("can_delete"), async (req, res, next) => {
-  try { await fs.unlink(path.join(await getFolderDiskPath(req.folder), cleanName(req.params.filename, "File name"))); res.status(204).end(); }
+  try {
+    const filePath = path.join(
+      await getFolderDiskPath(req.folder),
+      cleanName(req.params.filename, "File name"),
+    );
+    const fileSize = (await fs.stat(filePath)).size;
+    await fs.unlink(filePath);
+    adjustApplicationUsedBytes(-fileSize);
+    res.status(204).end();
+  }
   catch (error) { next(error); }
 });
 
 app.get("/api/admin/disk", requireAuth, requireAdmin, async (_req, res, next) => {
   try {
-    // statfs reads the actual mounted filesystem, not Docker's container overlay.
-    const stats = await fs.statfs(STORAGE_ROOT);
-    const totalBytes = Number(stats.blocks * stats.bsize);
-    const freeBytes = Number(stats.bfree * stats.bsize);
-    res.json({ totalBytes, freeBytes, usedBytes: totalBytes - freeBytes });
+    res.json(await getStorageCapacity());
   } catch (error) { next(error); }
 });
 
@@ -680,7 +767,10 @@ app.patch("/api/folders/:folderId", requireAuth, requireFolderPermission, requir
 app.delete("/api/folders/:folderId", requireAuth, requireFolderPermission, requireCapability("can_delete"), async (req, res, next) => {
   try {
     if (!req.folder.parent_id) return res.status(403).json({ error: "Only an administrator can delete a root folder." });
-    await fs.rm(await getFolderDiskPath(req.folder), { recursive: true, force: false });
+    const folderPath = await getFolderDiskPath(req.folder);
+    const folderSize = await getDirectorySize(folderPath);
+    await fs.rm(folderPath, { recursive: true, force: false });
+    adjustApplicationUsedBytes(-folderSize);
     await pool.query("DELETE FROM shared_folders WHERE id = $1", [req.folder.id]);
     res.status(204).end();
   } catch (error) { next(error); }
@@ -723,7 +813,10 @@ app.patch("/api/admin/folders/:folderId", requireAuth, requireAdmin, async (req,
 app.delete("/api/admin/folders/:folderId", requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const folder = await getFolder(req.params.folderId);
-    await fs.rm(await getFolderDiskPath(folder), { recursive: true, force: false });
+    const folderPath = await getFolderDiskPath(folder);
+    const folderSize = await getDirectorySize(folderPath);
+    await fs.rm(folderPath, { recursive: true, force: false });
+    adjustApplicationUsedBytes(-folderSize);
     await pool.query("DELETE FROM shared_folders WHERE id = $1", [folder.id]);
     res.status(204).end();
   } catch (error) { next(error); }
@@ -797,7 +890,7 @@ app.use((error, _req, res, _next) => {
   if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") return res.status(413).json({ error: "Upload exceeds the 20 GB file-size limit." });
   if (error.code === "23505") return res.status(409).json({ error: "That name already exists." });
   if (error.code === "ENOTEMPTY") return res.status(409).json({ error: "Folder must be empty before it can be deleted." });
-  res.status(500).json({ error: error.message || "Unexpected server error." });
+  res.status(error.statusCode || 500).json({ error: error.message || "Unexpected server error." });
 });
 
 await fs.mkdir(STORAGE_ROOT, { recursive: true });

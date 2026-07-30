@@ -1432,8 +1432,14 @@ function Admin({ token, onClose }) {
                 />
               </div>
               <p className="mt-2 text-sm text-slate-500">
-                {bytes(disk.freeBytes)} free on the physical storage mount.
+                {bytes(disk.freeBytes)} free within the SkyNest storage limit.
               </p>
+              {disk.configuredLimitBytes && (
+                <p className="mt-1 text-xs text-slate-400">
+                  App limit: {bytes(disk.configuredLimitBytes)} · Physical disk:{" "}
+                  {bytes(disk.physicalTotalBytes)}
+                </p>
+              )}
             </>
           )}
         </Panel>
