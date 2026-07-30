@@ -152,12 +152,33 @@ function signUser(user) {
   return jwt.sign({ id: user.id, username: user.username, isAdmin: user.is_admin }, JWT_SECRET, { expiresIn: "8h" });
 }
 
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   try {
     const token = req.headers.authorization?.replace(/^Bearer\s+/i, "");
-    req.user = jwt.verify(token, JWT_SECRET);
+    const payload = jwt.verify(token, JWT_SECRET);
+    const result = await pool.query(
+      "SELECT id, username, is_admin FROM users WHERE id = $1",
+      [payload.id],
+    );
+    if (!result.rowCount) {
+      return res.status(401).json({ error: "This account no longer exists. Please sign in again." });
+    }
+    const user = result.rows[0];
+    req.user = {
+      id: user.id,
+      username: user.username,
+      isAdmin: user.is_admin,
+    };
     next();
-  } catch { res.status(401).json({ error: "Please sign in again." }); }
+  } catch (error) {
+    if (
+      error?.name === "JsonWebTokenError" ||
+      error?.name === "TokenExpiredError"
+    ) {
+      return res.status(401).json({ error: "Please sign in again." });
+    }
+    next(error);
+  }
 }
 
 function requireAdmin(req, res, next) {
@@ -735,6 +756,130 @@ app.post("/api/admin/users", requireAuth, requireAdmin, async (req, res, next) =
     const result = await pool.query("INSERT INTO users (username, password_hash, is_admin) VALUES ($1, $2, $3) RETURNING id, username, is_admin", [username, hash, Boolean(req.body.isAdmin)]);
     res.status(201).json(result.rows[0]);
   } catch (error) { next(error); }
+});
+app.patch("/api/admin/users/:userId", requireAuth, requireAdmin, async (req, res, next) => {
+  let client;
+  try {
+    const userId = Number(req.params.userId);
+    if (!Number.isSafeInteger(userId) || userId <= 0) {
+      const error = new Error("Invalid user.");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    client = await pool.connect();
+    await client.query("BEGIN");
+    await client.query("LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE");
+    const currentResult = await client.query(
+      "SELECT id, username, password_hash, is_admin FROM users WHERE id = $1",
+      [userId],
+    );
+    if (!currentResult.rowCount) {
+      const error = new Error("User not found.");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const current = currentResult.rows[0];
+    const username =
+      req.body.username === undefined
+        ? current.username
+        : cleanName(req.body.username, "Username");
+    const isAdmin =
+      req.body.isAdmin === undefined
+        ? current.is_admin
+        : Boolean(req.body.isAdmin);
+    const password = String(req.body.password || "");
+
+    if (userId === req.user.id && !isAdmin) {
+      const error = new Error("You cannot remove your own administrator role.");
+      error.statusCode = 400;
+      throw error;
+    }
+    if (current.is_admin && !isAdmin) {
+      const adminCount = Number(
+        (await client.query("SELECT COUNT(*) AS count FROM users WHERE is_admin = TRUE"))
+          .rows[0].count,
+      );
+      if (adminCount <= 1) {
+        const error = new Error("SkyNest must always have at least one administrator.");
+        error.statusCode = 409;
+        throw error;
+      }
+    }
+    if (password && password.length < 8) {
+      const error = new Error("Password must contain at least 8 characters.");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const passwordHash = password
+      ? await bcrypt.hash(password, 12)
+      : current.password_hash;
+    const result = await client.query(
+      `UPDATE users
+       SET username = $1, password_hash = $2, is_admin = $3
+       WHERE id = $4
+       RETURNING id, username, is_admin`,
+      [username, passwordHash, isAdmin, userId],
+    );
+    await client.query("COMMIT");
+    res.json(result.rows[0]);
+  } catch (error) {
+    if (client) await client.query("ROLLBACK").catch(() => {});
+    next(error);
+  } finally {
+    client?.release();
+  }
+});
+app.delete("/api/admin/users/:userId", requireAuth, requireAdmin, async (req, res, next) => {
+  let client;
+  try {
+    const userId = Number(req.params.userId);
+    if (!Number.isSafeInteger(userId) || userId <= 0) {
+      const error = new Error("Invalid user.");
+      error.statusCode = 400;
+      throw error;
+    }
+    if (userId === req.user.id) {
+      const error = new Error("You cannot delete the account you are currently using.");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    client = await pool.connect();
+    await client.query("BEGIN");
+    await client.query("LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE");
+    const currentResult = await client.query(
+      "SELECT id, is_admin FROM users WHERE id = $1",
+      [userId],
+    );
+    if (!currentResult.rowCount) {
+      const error = new Error("User not found.");
+      error.statusCode = 404;
+      throw error;
+    }
+    if (currentResult.rows[0].is_admin) {
+      const adminCount = Number(
+        (await client.query("SELECT COUNT(*) AS count FROM users WHERE is_admin = TRUE"))
+          .rows[0].count,
+      );
+      if (adminCount <= 1) {
+        const error = new Error("SkyNest must always have at least one administrator.");
+        error.statusCode = 409;
+        throw error;
+      }
+    }
+
+    await client.query("DELETE FROM users WHERE id = $1", [userId]);
+    await client.query("COMMIT");
+    res.status(204).end();
+  } catch (error) {
+    if (client) await client.query("ROLLBACK").catch(() => {});
+    next(error);
+  } finally {
+    client?.release();
+  }
 });
 app.post("/api/admin/folders", requireAuth, requireAdmin, async (req, res, next) => {
   try {

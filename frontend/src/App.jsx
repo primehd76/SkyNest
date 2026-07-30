@@ -1154,7 +1154,7 @@ function Drive({ token, user, openAdmin }) {
   );
 }
 
-function Admin({ token, onClose }) {
+function Admin({ token, currentUser, onClose }) {
   const headers = useMemo(
     () => ({ Authorization: `Bearer ${token}` }),
     [token],
@@ -1166,6 +1166,7 @@ function Admin({ token, onClose }) {
     [selected, setSelected] = useState(null),
     [permissions, setPermissions] = useState([]),
     [permissionDrafts, setPermissionDrafts] = useState([]),
+    [editingUser, setEditingUser] = useState(null),
     [message, setMessage] = useState(null);
   const showAdminError = (error) =>
     setMessage({
@@ -1222,6 +1223,69 @@ function Admin({ token, onClose }) {
       formElement.reset();
       await load();
       showAdminSuccess("User created successfully.");
+    } catch (e) {
+      showAdminError(e);
+    }
+  }
+  function editUser(user) {
+    setEditingUser({
+      id: user.id,
+      username: user.username,
+      isAdmin: user.is_admin,
+      originalIsAdmin: user.is_admin,
+      password: "",
+    });
+    setMessage(null);
+  }
+  async function saveUser(event) {
+    event.preventDefault();
+    if (!editingUser) return;
+    try {
+      await api.patch(
+        `/admin/users/${editingUser.id}`,
+        {
+          username: editingUser.username,
+          isAdmin: editingUser.isAdmin,
+          ...(editingUser.password
+            ? { password: editingUser.password }
+            : {}),
+        },
+        { headers },
+      );
+      const editedCurrentAccount = editingUser.id === currentUser.id;
+      setEditingUser(null);
+      await load();
+      showAdminSuccess(
+        editedCurrentAccount
+          ? "Your account was updated. Sign in again to refresh the account name in this session."
+          : "User updated successfully.",
+      );
+    } catch (e) {
+      showAdminError(e);
+    }
+  }
+  async function deleteUser(user) {
+    if (
+      !confirm(
+        `Delete user "${user.username}"? Their folder permissions will also be removed. This cannot be undone.`,
+      )
+    )
+      return;
+    try {
+      await api.delete(`/admin/users/${user.id}`, { headers });
+      if (editingUser?.id === user.id) setEditingUser(null);
+      await load();
+      if (selected) {
+        const permissionResponse = await api.get(
+          `/admin/folders/${selected.id}/permissions`,
+          { headers },
+        );
+        setPermissions(permissionResponse.data);
+        setPermissionDrafts(
+          permissionResponse.data.map((item) => ({ ...item })),
+        );
+      }
+      showAdminSuccess(`User "${user.username}" deleted successfully.`);
     } catch (e) {
       showAdminError(e);
     }
@@ -1493,6 +1557,164 @@ function Admin({ token, onClose }) {
           </form>
         </Panel>
       </div>
+      <Panel title="User management" className="mt-5">
+        {editingUser && (
+          <form
+            onSubmit={saveUser}
+            className="mb-5 rounded-lg border border-sky-200 bg-sky-50 p-4"
+          >
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="font-semibold">
+                  Edit user: {editingUser.username}
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Leave the password empty to keep the current password.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingUser(null)}
+                className="rounded p-1 hover:bg-sky-100"
+                aria-label="Cancel editing user"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_auto]">
+              <input
+                required
+                value={editingUser.username}
+                onChange={(event) =>
+                  setEditingUser((current) => ({
+                    ...current,
+                    username: event.target.value,
+                  }))
+                }
+                placeholder="Username"
+                className="rounded border bg-white p-2"
+              />
+              <input
+                value={editingUser.password}
+                onChange={(event) =>
+                  setEditingUser((current) => ({
+                    ...current,
+                    password: event.target.value,
+                  }))
+                }
+                type="password"
+                minLength="8"
+                placeholder="New password (optional, 8+ characters)"
+                className="rounded border bg-white p-2"
+              />
+              <label className="flex items-center gap-2 rounded border bg-white px-3 py-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={editingUser.isAdmin}
+                  disabled={
+                    editingUser.id === currentUser.id ||
+                    (editingUser.originalIsAdmin &&
+                      users.filter((user) => user.is_admin).length === 1)
+                  }
+                  onChange={(event) =>
+                    setEditingUser((current) => ({
+                      ...current,
+                      isAdmin: event.target.checked,
+                    }))
+                  }
+                />
+                Administrator
+              </label>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="submit"
+                className="rounded bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700"
+              >
+                Save user
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditingUser(null)}
+                className="rounded border bg-white px-4 py-2 text-sm hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[620px] text-sm">
+            <thead>
+              <tr className="border-b text-left text-slate-500">
+                <th className="p-2">Username</th>
+                <th className="p-2">Role</th>
+                <th className="p-2 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((user) => {
+                const isCurrentUser = user.id === currentUser.id;
+                const isLastAdmin =
+                  user.is_admin &&
+                  users.filter((item) => item.is_admin).length === 1;
+                const cannotDelete = isCurrentUser || isLastAdmin;
+                return (
+                  <tr key={user.id} className="border-b last:border-0">
+                    <td className="p-2 font-medium">
+                      {user.username}
+                      {isCurrentUser && (
+                        <span className="ml-2 text-xs font-normal text-slate-400">
+                          (you)
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-2">
+                      <span
+                        className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${
+                          user.is_admin
+                            ? "bg-violet-100 text-violet-700"
+                            : "bg-slate-100 text-slate-600"
+                        }`}
+                      >
+                        {user.is_admin ? "Administrator" : "User"}
+                      </span>
+                    </td>
+                    <td className="p-2">
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => editUser(user)}
+                          className="flex items-center gap-1 rounded border px-3 py-2 hover:bg-slate-50"
+                        >
+                          <Pencil size={15} />
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteUser(user)}
+                          disabled={cannotDelete}
+                          title={
+                            isCurrentUser
+                              ? "You cannot delete the account currently in use."
+                              : isLastAdmin
+                                ? "SkyNest must retain at least one administrator."
+                                : "Delete user"
+                          }
+                          className="flex items-center gap-1 rounded bg-red-600 px-3 py-2 text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                        >
+                          <Trash2 size={15} />
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
       <div className="mt-5 grid gap-5 lg:grid-cols-[280px_1fr]">
         <Panel title="Shared folders">
           {folders.map((folder) => (
@@ -1649,7 +1871,11 @@ export default function App() {
       />
       {admin && (
         <div className="fixed inset-0 z-40 overflow-y-auto bg-slate-100">
-          <Admin token={session.token} onClose={() => setAdmin(false)} />
+          <Admin
+            token={session.token}
+            currentUser={session.user}
+            onClose={() => setAdmin(false)}
+          />
         </div>
       )}
     </>
