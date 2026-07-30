@@ -260,7 +260,8 @@ app.post("/api/admin/folders", requireAuth, requireAdmin, async (req, res, next)
 app.post("/api/folders/:folderId/subfolders", requireAuth, requireFolderPermission, requireCapability("can_write"), async (req, res, next) => {
   try {
     const name = cleanName(req.body.folderName, "Folder name");
-    const quota = parseQuota(req.body.quotaLimitBytes);
+    // Subfolders share the root folder's capacity. Only a root folder has its own limit.
+    const quota = Number(req.folder.quota_limit_bytes);
     const result = await pool.query(
       "INSERT INTO shared_folders (parent_id, folder_name, quota_limit_bytes) VALUES ($1, $2, $3) RETURNING *",
       [req.folder.id, name, quota]
@@ -279,6 +280,7 @@ app.patch("/api/admin/folders/:folderId", requireAuth, requireAdmin, async (req,
     const folder = await getFolder(req.params.folderId);
     const name = cleanName(req.body.folderName ?? folder.folder_name, "Folder name");
     const quota = parseQuota(req.body.quotaLimitBytes ?? folder.quota_limit_bytes);
+    if (folder.parent_id && quota !== Number(folder.quota_limit_bytes)) throw new Error("Only root folders can have their quota changed.");
 
     const currentPath = await getFolderDiskPath(folder);
     const usedBytes = await getDirectorySize(currentPath);
