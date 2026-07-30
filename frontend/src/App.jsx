@@ -252,8 +252,12 @@ function Drive({ token, user, openAdmin }) {
     if (!folderName || folderName === folder.folder_name) return;
     try {
       await api.patch(
-        `/admin/folders/${folder.id}`,
-        { folderName, quotaLimitBytes: Number(folder.quota_limit_bytes) },
+        user.isAdmin
+          ? `/admin/folders/${folder.id}`
+          : `/folders/${folder.id}`,
+        user.isAdmin
+          ? { folderName, quotaLimitBytes: Number(folder.quota_limit_bytes) }
+          : { folderName },
         { headers },
       );
       setFolderMenu(null);
@@ -304,6 +308,98 @@ function Drive({ token, user, openAdmin }) {
       showError(e);
     }
   }
+  async function uploadFileInChunks(
+    file,
+    relativePath,
+    targetFolder,
+    cancelSource,
+  ) {
+    const { data: session } = await api.post(
+      `/folders/${targetFolder.id}/uploads`,
+      { relativePath, fileSize: file.size },
+      { headers, cancelToken: cancelSource.token },
+    );
+    let offset = 0;
+    let firstChunk = true;
+
+    try {
+      while (firstChunk || offset < file.size) {
+        firstChunk = false;
+        const chunkEnd = Math.min(offset + session.chunkSize, file.size);
+        const chunk = file.slice(offset, chunkEnd);
+        const form = new FormData();
+        form.append("token", session.token);
+        form.append("offset", String(offset));
+        form.append("file", chunk, file.name);
+
+        let response;
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          try {
+            response = await api.post(
+              `/folders/${targetFolder.id}/upload-chunks`,
+              form,
+              {
+                headers,
+                cancelToken: cancelSource.token,
+                timeout: 3 * 60 * 1000,
+                onUploadProgress: (event) => {
+                  const sentInChunk = Math.min(event.loaded, chunk.size);
+                  const sentBytes = offset + sentInChunk;
+                  setUpload((current) =>
+                    current
+                      ? {
+                          ...current,
+                          progress: file.size
+                            ? Math.min(
+                                100,
+                                Math.round((sentBytes * 100) / file.size),
+                              )
+                            : 100,
+                          retrying: false,
+                        }
+                      : current,
+                  );
+                },
+              },
+            );
+            break;
+          } catch (error) {
+            if (axios.isCancel(error)) throw error;
+            const expectedOffset = Number(
+              error.response?.data?.expectedOffset,
+            );
+            if (
+              error.response?.status === 409 &&
+              Number.isSafeInteger(expectedOffset) &&
+              expectedOffset >= 0 &&
+              expectedOffset <= file.size
+            ) {
+              offset = expectedOffset;
+              response = null;
+              break;
+            }
+            if (attempt === 3) throw error;
+            setUpload((current) =>
+              current ? { ...current, retrying: true } : current,
+            );
+            await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+          }
+        }
+
+        if (!response) continue;
+        offset = Number(response.data.receivedBytes);
+        if (response.data.done) return response.data;
+      }
+    } catch (error) {
+      await api
+        .delete(`/folders/${targetFolder.id}/uploads`, {
+          headers,
+          data: { token: session.token },
+        })
+        .catch(() => {});
+      throw error;
+    }
+  }
   async function uploadFile(event) {
     const files = Array.from(event.target.files || []);
     event.target.value = "";
@@ -347,23 +443,12 @@ function Drive({ token, user, openAdmin }) {
       });
       setMessage("");
       try {
-        const form = new FormData();
-        form.append("relativePath", relativePath);
-        form.append("file", file);
-        await api.post(`/folders/${targetFolder.id}/upload`, form, {
-          headers,
-          cancelToken: cancelSource.token,
-          onUploadProgress: (e) =>
-            setUpload(
-              (current) =>
-                current && {
-                  ...current,
-                  progress: e.total
-                    ? Math.min(100, Math.round((e.loaded * 100) / e.total))
-                    : current.progress,
-                },
-            ),
-        });
+        await uploadFileInChunks(
+          file,
+          relativePath,
+          targetFolder,
+          cancelSource,
+        );
       } catch (e) {
         completed = false;
         if (!axios.isCancel(e)) showError(e);
@@ -633,15 +718,17 @@ function Drive({ token, user, openAdmin }) {
                           <Folder size={16} />
                           Open
                         </button>
+                        {(user.isAdmin || folder.can_write) && (
+                          <button
+                            onClick={() => renameFolder(folder)}
+                            className="flex w-full gap-2 px-3 py-2 text-left hover:bg-slate-100"
+                          >
+                            <Pencil size={16} />
+                            Rename
+                          </button>
+                        )}
                         {user.isAdmin && (
                           <>
-                            <button
-                              onClick={() => renameFolder(folder)}
-                              className="flex w-full gap-2 px-3 py-2 text-left hover:bg-slate-100"
-                            >
-                              <Pencil size={16} />
-                              Rename
-                            </button>
                             <button
                               onClick={openAdmin}
                               className="flex w-full gap-2 px-3 py-2 text-left hover:bg-slate-100"
@@ -750,11 +837,13 @@ function Drive({ token, user, openAdmin }) {
             <div className="min-w-0">
               <p className="truncate">Uploading {upload.name}</p>
               <p className="mt-1 text-slate-500">
-                {upload.progress === null
-                  ? "Preparing upload..."
-                  : upload.progress >= 100
-                    ? "Finishing on server..."
-                    : `${upload.progress}% complete`}
+                {upload.retrying
+                  ? "Connection paused, retrying..."
+                  : upload.progress === null
+                    ? "Preparing upload..."
+                    : upload.progress >= 100
+                      ? "Finishing on server..."
+                      : `${upload.progress}% complete`}
                 {upload.total > 1 &&
                   ` - file ${upload.index} of ${upload.total}`}
               </p>

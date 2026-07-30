@@ -6,6 +6,7 @@ import jwt from "jsonwebtoken";
 import pg from "pg";
 import path from "node:path";
 import { constants as fsConstants, promises as fs } from "node:fs";
+import { randomUUID } from "node:crypto";
 import archiver from "archiver";
 
 const { Pool } = pg;
@@ -160,6 +161,36 @@ async function getUniqueSubfolderName(parent, requestedName) {
   }
 }
 
+async function renameFolderRecord(folder, requestedName) {
+  const name = cleanName(requestedName, "Folder name");
+  if (name === folder.folder_name) return folder;
+
+  const currentPath = await getFolderDiskPath(folder);
+  const parentSegments = path
+    .relative(STORAGE_ROOT, path.dirname(currentPath))
+    .split(path.sep)
+    .filter(Boolean);
+  const nextPath = storagePath(...parentSegments, name);
+  try {
+    await fs.access(nextPath);
+    throw new Error("A storage folder with that name already exists.");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  await fs.rename(currentPath, nextPath);
+  try {
+    const result = await pool.query(
+      "UPDATE shared_folders SET folder_name = $1 WHERE id = $2 RETURNING *",
+      [name, folder.id],
+    );
+    return result.rows[0];
+  } catch (error) {
+    await fs.rename(nextPath, currentPath).catch(() => {});
+    throw error;
+  }
+}
+
 function requireDownloadTicket(req, res, next) {
   try {
     const ticket = jwt.verify(String(req.query.ticket || ""), JWT_SECRET);
@@ -217,6 +248,21 @@ async function reconcileStorageFolders(parent) {
     const child = await ensureSubfolder(parent, entry.name);
     await reconcileStorageFolders(child);
   }
+}
+
+async function cleanupExpiredUploads() {
+  const cutoff = Date.now() - 25 * 60 * 60 * 1000;
+  const entries = await fs.readdir(UPLOAD_TEMP_ROOT, { withFileTypes: true });
+  await Promise.all(
+    entries
+      .filter(entry => entry.isFile())
+      .map(async entry => {
+        const entryPath = path.join(UPLOAD_TEMP_ROOT, entry.name);
+        if ((await fs.stat(entryPath)).mtimeMs < cutoff) {
+          await fs.unlink(entryPath).catch(() => {});
+        }
+      }),
+  );
 }
 
 async function requireFolderPermission(req, res, next) {
@@ -319,6 +365,135 @@ app.get("/api/folders/:folderId/files", requireAuth, requireFolderPermission, re
       quotaFolderName: rootFolder.folder_name,
       permissions: req.permission
     });
+  } catch (error) { next(error); }
+});
+
+app.post("/api/folders/:folderId/uploads", requireAuth, requireFolderPermission, requireCapability("can_write"), async (req, res, next) => {
+  try {
+    const fileSize = Number(req.body.fileSize);
+    if (!Number.isSafeInteger(fileSize) || fileSize < 0) throw new Error("Invalid upload size.");
+    const relativePath = cleanRelativePath(req.body.relativePath);
+    const requestedFilename = relativePath.pop();
+    let targetFolder = req.folder;
+    for (const segment of relativePath) targetFolder = await ensureSubfolder(targetFolder, segment);
+
+    const rootFolder = (await getFolderTrail(req.folder))[0];
+    const usedBytes = await getDirectorySize(await getFolderDiskPath(rootFolder));
+    if (usedBytes + fileSize > Number(rootFolder.quota_limit_bytes)) {
+      return res.status(413).json({ error: "Upload rejected: this folder quota would be exceeded." });
+    }
+
+    const uploadId = randomUUID();
+    const token = jwt.sign(
+      {
+        type: "chunk-upload",
+        uploadId,
+        userId: req.user.id,
+        folderId: req.folder.id,
+        targetFolderId: targetFolder.id,
+        filename: requestedFilename,
+        fileSize,
+      },
+      JWT_SECRET,
+      { expiresIn: "24h" },
+    );
+    res.status(201).json({ token, chunkSize: 8 * 1024 * 1024 });
+  } catch (error) { next(error); }
+});
+
+app.post("/api/folders/:folderId/upload-chunks", requireAuth, requireFolderPermission, requireCapability("can_write"), upload.single("file"), async (req, res, next) => {
+  let partPath;
+  try {
+    if (!req.file) throw new Error("Upload chunk is missing.");
+    const ticket = jwt.verify(String(req.body.token || ""), JWT_SECRET);
+    if (
+      ticket.type !== "chunk-upload" ||
+      Number(ticket.userId) !== Number(req.user.id) ||
+      Number(ticket.folderId) !== Number(req.folder.id) ||
+      !/^[0-9a-f-]{36}$/i.test(String(ticket.uploadId))
+    ) {
+      return res.status(403).json({ error: "Invalid upload session." });
+    }
+
+    const offset = Number(req.body.offset);
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid chunk offset.");
+    partPath = path.join(UPLOAD_TEMP_ROOT, `${ticket.uploadId}.part`);
+    const donePath = path.join(UPLOAD_TEMP_ROOT, `${ticket.uploadId}.done.json`);
+    const completed = await fs.readFile(donePath, "utf8")
+      .then(value => JSON.parse(value))
+      .catch(error => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+    if (completed) {
+      await fs.unlink(req.file.path);
+      return res.status(201).json(completed);
+    }
+    const currentSize = await fs.stat(partPath).then(stat => stat.size).catch(error => {
+      if (error.code === "ENOENT") return 0;
+      throw error;
+    });
+    if (currentSize !== offset) {
+      await fs.unlink(req.file.path);
+      return res.status(409).json({
+        error: "Upload offset is out of sync.",
+        expectedOffset: currentSize,
+      });
+    }
+
+    const chunk = await fs.readFile(req.file.path);
+    await fs.appendFile(partPath, chunk);
+    await fs.unlink(req.file.path);
+    const receivedBytes = currentSize + chunk.length;
+    if (receivedBytes > Number(ticket.fileSize)) {
+      await fs.unlink(partPath).catch(() => {});
+      throw new Error("Upload is larger than declared.");
+    }
+    if (receivedBytes < Number(ticket.fileSize)) {
+      return res.json({ done: false, receivedBytes });
+    }
+
+    const rootFolder = (await getFolderTrail(req.folder))[0];
+    const usedBytes = await getDirectorySize(await getFolderDiskPath(rootFolder));
+    if (usedBytes + receivedBytes > Number(rootFolder.quota_limit_bytes)) {
+      await fs.unlink(partPath).catch(() => {});
+      return res.status(413).json({ error: "Upload rejected: this folder quota would be exceeded." });
+    }
+    const targetFolder = await getFolder(ticket.targetFolderId);
+    const filename = await moveUploadedFileUniquely(
+      await getFolderDiskPath(targetFolder),
+      ticket.filename,
+      partPath,
+    );
+    const result = { done: true, receivedBytes, name: filename };
+    await fs.writeFile(donePath, JSON.stringify(result));
+    res.status(201).json(result);
+  } catch (error) {
+    await fs.unlink(req.file?.path).catch(() => {});
+    next(error);
+  }
+});
+
+app.delete("/api/folders/:folderId/uploads", requireAuth, requireFolderPermission, requireCapability("can_write"), async (req, res, next) => {
+  try {
+    const ticket = jwt.verify(String(req.body.token || ""), JWT_SECRET);
+    if (
+      ticket.type !== "chunk-upload" ||
+      Number(ticket.userId) !== Number(req.user.id) ||
+      Number(ticket.folderId) !== Number(req.folder.id) ||
+      !/^[0-9a-f-]{36}$/i.test(String(ticket.uploadId))
+    ) {
+      return res.status(403).json({ error: "Invalid upload session." });
+    }
+    await Promise.all(
+      [".part", ".done.json"].map(suffix =>
+        fs.unlink(path.join(UPLOAD_TEMP_ROOT, `${ticket.uploadId}${suffix}`))
+          .catch(error => {
+            if (error.code !== "ENOENT") throw error;
+          }),
+      ),
+    );
+    res.status(204).end();
   } catch (error) { next(error); }
 });
 
@@ -446,6 +621,11 @@ app.post("/api/folders/:folderId/subfolders", requireAuth, requireFolderPermissi
     res.status(201).json(folder);
   } catch (error) { next(error); }
 });
+app.patch("/api/folders/:folderId", requireAuth, requireFolderPermission, requireCapability("can_write"), async (req, res, next) => {
+  try {
+    res.json(await renameFolderRecord(req.folder, req.body.folderName));
+  } catch (error) { next(error); }
+});
 app.delete("/api/folders/:folderId", requireAuth, requireFolderPermission, requireCapability("can_delete"), async (req, res, next) => {
   try {
     if (!req.folder.parent_id) return res.status(403).json({ error: "Only an administrator can delete a root folder." });
@@ -518,6 +698,7 @@ app.use((error, _req, res, _next) => {
 
 await fs.mkdir(STORAGE_ROOT, { recursive: true });
 await fs.mkdir(UPLOAD_TEMP_ROOT, { recursive: true });
+await cleanupExpiredUploads();
 await migrateDatabase();
 for (const rootFolder of await listFolders({ isAdmin: true })) await reconcileStorageFolders(rootFolder);
 await createInitialAdmin();
