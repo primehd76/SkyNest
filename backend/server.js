@@ -223,6 +223,27 @@ async function getFolderTrail(folder) {
   return trail;
 }
 
+async function getAccessibleFolderTrail(user, folder) {
+  const trail = await getFolderTrail(folder);
+  if (user.isAdmin) return trail;
+
+  const result = await pool.query(
+    `SELECT folder_id
+       FROM folder_permissions
+      WHERE user_id = $1
+        AND can_read = TRUE
+        AND folder_id = ANY($2::int[])`,
+    [user.id, trail.map(item => item.id)],
+  );
+  const directlyReadable = new Set(
+    result.rows.map(row => Number(row.folder_id)),
+  );
+  const accessRootIndex = trail.findIndex(item =>
+    directlyReadable.has(Number(item.id)),
+  );
+  return accessRootIndex >= 0 ? trail.slice(accessRootIndex) : [];
+}
+
 function parseQuota(value) {
   const quota = Number(value);
   if (!Number.isSafeInteger(quota) || quota < 0) throw new Error("Quota must be a non-negative whole number of bytes.");
@@ -294,6 +315,31 @@ function requireCapability(capability) {
 }
 
 async function listFolders(user, parentId = null) {
+  if (!user.isAdmin && parentId === null) {
+    const assignments = (
+      await pool.query(
+        `SELECT f.*, p.can_read, p.can_write, p.can_delete
+           FROM folder_permissions p
+           JOIN shared_folders f ON f.id = p.folder_id
+          WHERE p.user_id = $1
+            AND p.can_read = TRUE
+          ORDER BY f.folder_name`,
+        [user.id],
+      )
+    ).rows;
+    const assignedIds = new Set(
+      assignments.map(folder => Number(folder.id)),
+    );
+    const accessRoots = [];
+    for (const folder of assignments) {
+      const ancestors = (await getFolderTrail(folder)).slice(0, -1);
+      if (!ancestors.some(parent => assignedIds.has(Number(parent.id)))) {
+        accessRoots.push(folder);
+      }
+    }
+    return accessRoots;
+  }
+
   const parentClause = parentId === null ? "f.parent_id IS NULL" : "f.parent_id = $1";
   const params = parentId === null ? [] : [parentId];
   const rows = (await pool.query(`SELECT f.* FROM shared_folders f WHERE ${parentClause} ORDER BY folder_name`, params)).rows;
@@ -341,7 +387,12 @@ app.get("/api/folders", requireAuth, async (req, res, next) => {
 });
 
 app.get("/api/folders/:folderId", requireAuth, requireFolderPermission, requireCapability("can_read"), async (req, res, next) => {
-  try { res.json({ folder: req.folder, trail: await getFolderTrail(req.folder) }); }
+  try {
+    res.json({
+      folder: req.folder,
+      trail: await getAccessibleFolderTrail(req.user, req.folder),
+    });
+  }
   catch (error) { next(error); }
 });
 
