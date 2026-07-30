@@ -34,6 +34,48 @@ import {
 } from "lucide-react";
 
 const api = axios.create({ baseURL: "/api" });
+const UPLOAD_DB_NAME = "skynest-uploads";
+const UPLOAD_STORE_NAME = "queue";
+
+function openUploadDatabase() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(UPLOAD_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(UPLOAD_STORE_NAME)) {
+        request.result.createObjectStore(UPLOAD_STORE_NAME, { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function withUploadStore(mode, action) {
+  const database = await openUploadDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(UPLOAD_STORE_NAME, mode);
+    const store = transaction.objectStore(UPLOAD_STORE_NAME);
+    const request = action(store);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+    transaction.oncomplete = () => database.close();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+const savePersistedUpload = (task) =>
+  withUploadStore("readwrite", (store) =>
+    store.put({
+      ...task,
+      cancelSource: undefined,
+      status: "queued",
+    }),
+  );
+const deletePersistedUpload = (taskId) =>
+  withUploadStore("readwrite", (store) => store.delete(taskId));
+const loadPersistedUploads = () =>
+  withUploadStore("readonly", (store) => store.getAll());
+
 const bytes = (value = 0) => {
   if (!value) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -138,12 +180,16 @@ function Drive({ token, user, openAdmin }) {
   const [folders, setFolders] = useState([]),
     [active, setActive] = useState(null),
     [fileData, setFileData] = useState(null);
-  const [message, setMessage] = useState(""),
-    [upload, setUpload] = useState(null),
+  const [message, setMessage] = useState(null),
+    [uploads, setUploads] = useState([]),
     [menu, setMenu] = useState(null),
     [folderMenu, setFolderMenu] = useState(null),
     [trail, setTrail] = useState([]);
   const activeRef = useRef(null);
+  const uploadQueueRef = useRef([]);
+  const activeUploadRef = useRef(null);
+  const uploadProcessingRef = useRef(false);
+  const restoredUploadsRef = useRef(false);
   const headers = useMemo(
     () => ({ Authorization: `Bearer ${token}` }),
     [token],
@@ -164,6 +210,38 @@ function Drive({ token, user, openAdmin }) {
   useEffect(() => {
     activeRef.current = active;
   }, [active]);
+  useEffect(() => {
+    if (restoredUploadsRef.current) return;
+    restoredUploadsRef.current = true;
+    navigator.storage?.persist?.().catch(() => {});
+    loadPersistedUploads()
+      .then((savedTasks) => {
+        if (!savedTasks.length) return;
+        const restoredTasks = savedTasks.map((task) => ({
+          ...task,
+          status: "queued",
+          progress: task.file?.size
+            ? Math.round(((task.offset || 0) * 100) / task.file.size)
+            : 0,
+        }));
+        uploadQueueRef.current.push(...restoredTasks);
+        setUploads((current) => [...current, ...restoredTasks]);
+        void processUploadQueue();
+      })
+      .catch((error) => showError(error));
+  }, []);
+  useEffect(() => {
+    const hasActiveUploads = uploads.some((item) =>
+      ["queued", "uploading", "retrying"].includes(item.status),
+    );
+    if (!hasActiveUploads) return undefined;
+    const warnBeforeReload = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeReload);
+    return () => window.removeEventListener("beforeunload", warnBeforeReload);
+  }, [uploads]);
   useEffect(() => {
     refreshFolders().catch(showError);
   }, [refreshFolders]);
@@ -195,10 +273,15 @@ function Drive({ token, user, openAdmin }) {
     return () => window.removeEventListener("popstate", onPopState);
   }, [headers]);
   function showError(error) {
-    setMessage(
-      error.response?.data?.error || error.message || "Something went wrong.",
-    );
+    setMessage({
+      type: "error",
+      text:
+        error.response?.data?.error ||
+        error.message ||
+        "Something went wrong.",
+    });
   }
+  const showSuccess = (text) => setMessage({ type: "success", text });
   async function selectFolder(
     folder,
     nextTrail = [folder],
@@ -227,7 +310,7 @@ function Drive({ token, user, openAdmin }) {
     setTrail([]);
     setMenu(null);
     setFolderMenu(null);
-    setMessage("");
+    setMessage(null);
     localStorage.removeItem("skynest:lastFolderId");
     if (pushHistory) window.history.pushState({}, "", window.location.pathname);
   }
@@ -242,7 +325,7 @@ function Drive({ token, user, openAdmin }) {
         { headers },
       );
       await refreshFiles(active);
-      setMessage("Folder created.");
+      showSuccess("Folder created successfully.");
     } catch (e) {
       showError(e);
     }
@@ -263,6 +346,7 @@ function Drive({ token, user, openAdmin }) {
       setFolderMenu(null);
       await refreshFolders();
       if (active) await refreshFiles(active);
+      showSuccess("Folder renamed successfully.");
     } catch (e) {
       showError(e);
     }
@@ -275,7 +359,7 @@ function Drive({ token, user, openAdmin }) {
     if (value === null) return;
     const quotaLimitBytes = Math.round(Number(value) * 1024 ** 3);
     if (!Number.isSafeInteger(quotaLimitBytes) || quotaLimitBytes < 0)
-      return setMessage("Quota must be a non-negative number of GB.");
+      return showError(new Error("Quota must be a non-negative number of GB."));
     try {
       await api.patch(
         `/admin/folders/${folder.id}`,
@@ -285,6 +369,7 @@ function Drive({ token, user, openAdmin }) {
       setFolderMenu(null);
       await refreshFolders();
       if (active) await refreshFiles(active);
+      showSuccess("Folder quota updated successfully.");
     } catch (e) {
       showError(e);
     }
@@ -304,22 +389,27 @@ function Drive({ token, user, openAdmin }) {
       setFolderMenu(null);
       await refreshFolders();
       if (active) await refreshFiles(active);
+      showSuccess("Folder deleted successfully.");
     } catch (e) {
       showError(e);
     }
   }
-  async function uploadFileInChunks(
-    file,
-    relativePath,
-    targetFolder,
-    cancelSource,
-  ) {
-    const { data: session } = await api.post(
-      `/folders/${targetFolder.id}/uploads`,
-      { relativePath, fileSize: file.size },
-      { headers, cancelToken: cancelSource.token },
-    );
-    let offset = 0;
+  async function uploadFileInChunks(task, cancelSource) {
+    const { file, relativePath, targetFolder } = task;
+    let session = task.session;
+    if (!session) {
+      const response = await api.post(
+        `/folders/${targetFolder.id}/uploads`,
+        { relativePath, fileSize: file.size },
+        { headers, cancelToken: cancelSource.token },
+      );
+      session = response.data;
+      task.session = session;
+      task.offset = 0;
+      updateUploadTask(task.id, { session, offset: 0 });
+      if (task.persisted) await savePersistedUpload(task);
+    }
+    let offset = Number(task.offset || 0);
     let firstChunk = true;
 
     try {
@@ -330,7 +420,11 @@ function Drive({ token, user, openAdmin }) {
         const form = new FormData();
         form.append("token", session.token);
         form.append("offset", String(offset));
-        form.append("file", chunk, file.name);
+        form.append(
+          "file",
+          chunk,
+          file.name || task.name.split(/[\\/]/).pop(),
+        );
 
         let response;
         for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -345,20 +439,15 @@ function Drive({ token, user, openAdmin }) {
                 onUploadProgress: (event) => {
                   const sentInChunk = Math.min(event.loaded, chunk.size);
                   const sentBytes = offset + sentInChunk;
-                  setUpload((current) =>
-                    current
-                      ? {
-                          ...current,
-                          progress: file.size
-                            ? Math.min(
-                                100,
-                                Math.round((sentBytes * 100) / file.size),
-                              )
-                            : 100,
-                          retrying: false,
-                        }
-                      : current,
-                  );
+                  updateUploadTask(task.id, {
+                    progress: file.size
+                      ? Math.min(
+                          100,
+                          Math.round((sentBytes * 100) / file.size),
+                        )
+                      : 100,
+                    status: "uploading",
+                  });
                 },
               },
             );
@@ -375,19 +464,23 @@ function Drive({ token, user, openAdmin }) {
               expectedOffset <= file.size
             ) {
               offset = expectedOffset;
+              task.offset = offset;
+              updateUploadTask(task.id, { offset });
+              if (task.persisted) await savePersistedUpload(task);
               response = null;
               break;
             }
             if (attempt === 3) throw error;
-            setUpload((current) =>
-              current ? { ...current, retrying: true } : current,
-            );
+            updateUploadTask(task.id, { status: "retrying" });
             await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
           }
         }
 
         if (!response) continue;
         offset = Number(response.data.receivedBytes);
+        task.offset = offset;
+        updateUploadTask(task.id, { offset });
+        if (task.persisted) await savePersistedUpload(task);
         if (response.data.done) return response.data;
       }
     } catch (error) {
@@ -399,6 +492,134 @@ function Drive({ token, user, openAdmin }) {
         .catch(() => {});
       throw error;
     }
+  }
+  function updateUploadTask(taskId, patch) {
+    setUploads((current) =>
+      current.map((item) =>
+        item.id === taskId ? { ...item, ...patch } : item,
+      ),
+    );
+  }
+  function cancelUpload(taskId) {
+    const task = uploads.find((item) => item.id === taskId);
+    uploadQueueRef.current = uploadQueueRef.current.filter(
+      (task) => task.id !== taskId,
+    );
+    if (activeUploadRef.current?.id === taskId) {
+      activeUploadRef.current.cancelSource.cancel("User cancelled upload");
+    }
+    updateUploadTask(taskId, {
+      status: "cancelled",
+      error: "Cancelled by user",
+    });
+    if (task?.persisted) void deletePersistedUpload(taskId);
+  }
+  function dismissUpload(task) {
+    setUploads((current) =>
+      current.filter((upload) => upload.id !== task.id),
+    );
+    if (task.persisted) void deletePersistedUpload(task.id);
+  }
+  async function retryUpload(task) {
+    const retryTask = {
+      ...task,
+      status: "queued",
+      error: null,
+      progress: task.file?.size
+        ? Math.round(((task.offset || 0) * 100) / task.file.size)
+        : 0,
+    };
+    if (retryTask.persisted) await savePersistedUpload(retryTask);
+    setUploads((current) =>
+      current.map((item) => (item.id === task.id ? retryTask : item)),
+    );
+    uploadQueueRef.current.push(retryTask);
+    void processUploadQueue();
+  }
+  function clearFinishedUploads() {
+    const finished = uploads.filter(
+      (item) =>
+        !["queued", "uploading", "retrying"].includes(item.status),
+    );
+    setUploads((current) =>
+      current.filter((item) =>
+        ["queued", "uploading", "retrying"].includes(item.status),
+      ),
+    );
+    for (const task of finished) {
+      if (task.persisted) void deletePersistedUpload(task.id);
+    }
+  }
+  async function processUploadQueue() {
+    if (uploadProcessingRef.current) return;
+    uploadProcessingRef.current = true;
+    let hadFailure = false;
+    let hadCancellation = false;
+    while (uploadQueueRef.current.length) {
+      const task = uploadQueueRef.current.shift();
+      const cancelSource = axios.CancelToken.source();
+      activeUploadRef.current = { id: task.id, cancelSource };
+      updateUploadTask(task.id, {
+        status: "uploading",
+        cancelSource,
+      });
+      try {
+        await uploadFileInChunks(task, cancelSource);
+        updateUploadTask(task.id, {
+          status: "completed",
+          progress: 100,
+          cancelSource: null,
+        });
+        if (task.persisted) await deletePersistedUpload(task.id);
+        if (activeRef.current?.id === task.uploadParent.id) {
+          await refreshFiles(task.uploadParent);
+        }
+      } catch (error) {
+        if (!axios.isCancel(error)) hadFailure = true;
+        else hadCancellation = true;
+        updateUploadTask(task.id, {
+          status: axios.isCancel(error) ? "cancelled" : "failed",
+          error: axios.isCancel(error)
+            ? "Cancelled by user"
+            : error.response?.data?.error || error.message,
+          cancelSource: null,
+        });
+        if (axios.isCancel(error) && task.persisted) {
+          await deletePersistedUpload(task.id).catch(() => {});
+        }
+      } finally {
+        activeUploadRef.current = null;
+      }
+    }
+    uploadProcessingRef.current = false;
+    if (hadFailure) {
+      showError(new Error("One or more uploads failed. Check the upload queue."));
+    } else if (hadCancellation) {
+      setMessage({ type: "info", text: "One or more uploads were cancelled." });
+    } else {
+      showSuccess("Upload queue completed.");
+    }
+  }
+  async function enqueueUploadTasks(tasks) {
+    setUploads((current) => [...current, ...tasks]);
+    let persistenceFailed = false;
+    for (const task of tasks) {
+      try {
+        task.persisted = true;
+        await savePersistedUpload(task);
+      } catch {
+        task.persisted = false;
+        persistenceFailed = true;
+      }
+    }
+    if (persistenceFailed) {
+      setMessage({
+        type: "info",
+        text: "Some large files could not be cached for refresh recovery. Keep this tab open until they finish.",
+      });
+    }
+    uploadQueueRef.current.push(...tasks);
+    void processUploadQueue();
   }
   async function uploadFile(event) {
     const files = Array.from(event.target.files || []);
@@ -412,9 +633,11 @@ function Drive({ token, user, openAdmin }) {
     const uploadedRootName = isFolderUpload
       ? files[0].webkitRelativePath.split(/[\\/]/)[0]
       : null;
-    let completed = true;
     if (uploadedRootName) {
-      setMessage(`Preparing folder ${uploadedRootName}...`);
+      setMessage({
+        type: "info",
+        text: `Preparing folder ${uploadedRootName}...`,
+      });
       try {
         const { data } = await api.post(
           `/folders/${uploadParent.id}/subfolders`,
@@ -427,39 +650,28 @@ function Drive({ token, user, openAdmin }) {
         return;
       }
     }
-    for (let index = 0; index < files.length; index += 1) {
-      const file = files[index],
-        cancelSource = axios.CancelToken.source();
+    const tasks = files.map((file, index) => {
       const browserPath = file.webkitRelativePath || file.name;
       const relativePath = uploadedRootName
         ? browserPath.split(/[\\/]/).slice(1).join("/")
         : browserPath;
-      setUpload({
+      return {
+        id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
+        file,
         name: browserPath,
+        relativePath,
+        targetFolder,
+        uploadParent,
         progress: null,
-        cancelSource,
+        status: "queued",
+        session: null,
+        offset: 0,
         index: index + 1,
         total: files.length,
-      });
-      setMessage("");
-      try {
-        await uploadFileInChunks(
-          file,
-          relativePath,
-          targetFolder,
-          cancelSource,
-        );
-      } catch (e) {
-        completed = false;
-        if (!axios.isCancel(e)) showError(e);
-        else setMessage("Upload cancelled.");
-        break;
-      }
-    }
-    if (activeRef.current?.id === uploadParent.id)
-      await refreshFiles(uploadParent);
-    setUpload(null);
-    if (completed) setMessage("Upload complete.");
+      };
+    });
+    setMessage(null);
+    await enqueueUploadTasks(tasks);
   }
   async function renameFile(file) {
     const name = prompt("New file name", file.name);
@@ -471,6 +683,7 @@ function Drive({ token, user, openAdmin }) {
         { headers },
       );
       await refreshFiles();
+      showSuccess("File renamed successfully.");
     } catch (e) {
       showError(e);
     }
@@ -483,6 +696,7 @@ function Drive({ token, user, openAdmin }) {
         { headers },
       );
       await refreshFiles();
+      showSuccess("File deleted successfully.");
     } catch (e) {
       showError(e);
     }
@@ -657,8 +871,16 @@ function Drive({ token, user, openAdmin }) {
                 )}
               </div>
               {message && (
-                <p className="mb-3 rounded bg-slate-100 p-3 text-sm">
-                  {message}
+                <p
+                  className={`mb-3 rounded border p-3 text-sm ${
+                    message.type === "success"
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : message.type === "error"
+                        ? "border-red-200 bg-red-50 text-red-700"
+                        : "border-sky-200 bg-sky-50 text-sky-700"
+                  }`}
+                >
+                  {message.text}
                 </p>
               )}
               <button
@@ -831,37 +1053,100 @@ function Drive({ token, user, openAdmin }) {
           )}
         </section>
       </main>
-      {upload && (
-        <aside className="fixed bottom-5 right-5 z-20 w-80 rounded-lg bg-white p-4 shadow-xl ring-1 ring-slate-200">
-          <div className="mb-2 flex items-start justify-between gap-3 text-sm">
-            <div className="min-w-0">
-              <p className="truncate">Uploading {upload.name}</p>
-              <p className="mt-1 text-slate-500">
-                {upload.retrying
-                  ? "Connection paused, retrying..."
-                  : upload.progress === null
-                    ? "Preparing upload..."
-                    : upload.progress >= 100
-                      ? "Finishing on server..."
-                      : `${upload.progress}% complete`}
-                {upload.total > 1 &&
-                  ` - file ${upload.index} of ${upload.total}`}
+      {uploads.length > 0 && (
+        <aside className="fixed bottom-5 right-5 z-[60] w-96 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl bg-white shadow-2xl ring-1 ring-slate-200">
+          <div className="flex items-center justify-between border-b px-4 py-3">
+            <div>
+              <p className="font-semibold">Uploads</p>
+              <p className="text-xs text-slate-500">
+                {uploads.filter((item) =>
+                  ["queued", "uploading", "retrying"].includes(item.status),
+                ).length}{" "}
+                item(s) remaining
               </p>
             </div>
             <button
-              onClick={() =>
-                upload.cancelSource.cancel("User cancelled upload")
-              }
-              className="shrink-0 text-red-600"
+              onClick={clearFinishedUploads}
+              className="text-xs text-sky-700 hover:underline"
             >
-              Cancel
+              Clear finished
             </button>
           </div>
-          <div className="h-2 overflow-hidden rounded bg-slate-200">
-            <div
-              className="h-full bg-sky-600"
-              style={{ width: `${upload.progress ?? 0}%` }}
-            />
+          <div className="max-h-80 overflow-y-auto">
+            {uploads.map((item) => (
+              <div key={item.id} className="border-b px-4 py-3 last:border-0">
+                <div className="flex items-start justify-between gap-3 text-sm">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium">{item.name}</p>
+                    <p
+                      className={`mt-1 text-xs ${
+                        item.status === "failed"
+                          ? "text-red-600"
+                          : item.status === "completed"
+                            ? "text-emerald-600"
+                            : "text-slate-500"
+                      }`}
+                    >
+                      {item.status === "queued" && "Waiting in queue"}
+                      {item.status === "uploading" &&
+                        `${item.progress ?? 0}% uploaded`}
+                      {item.status === "retrying" &&
+                        "Connection paused, retrying..."}
+                      {item.status === "completed" && "Upload complete"}
+                      {item.status === "cancelled" && "Upload cancelled"}
+                      {item.status === "failed" &&
+                        (item.error || "Upload failed")}
+                    </p>
+                  </div>
+                  {["queued", "uploading", "retrying"].includes(
+                    item.status,
+                  ) ? (
+                    <button
+                      onClick={() => cancelUpload(item.id)}
+                      className="shrink-0 text-xs text-red-600"
+                    >
+                      Cancel
+                    </button>
+                  ) : item.status === "failed" ? (
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button
+                        onClick={() => retryUpload(item)}
+                        className="text-xs font-medium text-sky-700"
+                      >
+                        Retry
+                      </button>
+                      <button
+                        onClick={() => dismissUpload(item)}
+                        className="text-slate-400 hover:text-slate-700"
+                        aria-label="Dismiss upload"
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => dismissUpload(item)}
+                      className="shrink-0 text-slate-400 hover:text-slate-700"
+                      aria-label="Dismiss upload"
+                    >
+                      <X size={16} />
+                    </button>
+                  )}
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded bg-slate-200">
+                  <div
+                    className={`h-full transition-[width] ${
+                      item.status === "failed"
+                        ? "bg-red-500"
+                        : item.status === "completed"
+                          ? "bg-emerald-500"
+                          : "bg-sky-600"
+                    }`}
+                    style={{ width: `${item.progress ?? 0}%` }}
+                  />
+                </div>
+              </div>
+            ))}
           </div>
         </aside>
       )}
@@ -880,7 +1165,15 @@ function Admin({ token, onClose }) {
     [disk, setDisk] = useState(null),
     [selected, setSelected] = useState(null),
     [permissions, setPermissions] = useState([]),
-    [message, setMessage] = useState("");
+    [permissionDrafts, setPermissionDrafts] = useState([]),
+    [message, setMessage] = useState(null);
+  const showAdminError = (error) =>
+    setMessage({
+      type: "error",
+      text: error.response?.data?.error || error.message || String(error),
+    });
+  const showAdminSuccess = (text) =>
+    setMessage({ type: "success", text });
   const load = useCallback(async () => {
     const [u, f, d] = await Promise.all([
       api.get("/admin/users", { headers }),
@@ -892,15 +1185,24 @@ function Admin({ token, onClose }) {
     setDisk(d.data);
   }, [headers]);
   useEffect(() => {
-    load().catch((e) => setMessage(e.response?.data?.error || e.message));
+    load().catch(showAdminError);
   }, [load]);
   async function selectFolder(folder) {
+    if (
+      selected &&
+      selected.id !== folder.id &&
+      hasPermissionChanges &&
+      !confirm("Discard unsaved permission changes?")
+    ) {
+      return;
+    }
     setSelected(folder);
     const [permissionResponse, childResponse] = await Promise.all([
       api.get(`/admin/folders/${folder.id}/permissions`, { headers }),
       api.get(`/folders?parentId=${folder.id}`, { headers }),
     ]);
     setPermissions(permissionResponse.data);
+    setPermissionDrafts(permissionResponse.data.map(item => ({ ...item })));
     setChildren(childResponse.data);
   }
   async function createUser(event) {
@@ -919,8 +1221,9 @@ function Admin({ token, onClose }) {
       );
       formElement.reset();
       await load();
+      showAdminSuccess("User created successfully.");
     } catch (e) {
-      setMessage(e.response?.data?.error || e.message);
+      showAdminError(e);
     }
   }
   async function createFolder(event) {
@@ -938,8 +1241,9 @@ function Admin({ token, onClose }) {
       );
       formElement.reset();
       await load();
+      showAdminSuccess("Shared folder created successfully.");
     } catch (e) {
-      setMessage(e.response?.data?.error || e.message);
+      showAdminError(e);
     }
   }
   async function renameFolder() {
@@ -954,9 +1258,9 @@ function Admin({ token, onClose }) {
       );
       setSelected(data);
       await load();
-      setMessage("Folder renamed.");
+      showAdminSuccess("Folder renamed successfully.");
     } catch (e) {
-      setMessage(e.response?.data?.error || e.message);
+      showAdminError(e);
     }
   }
   async function changeQuota() {
@@ -968,7 +1272,9 @@ function Admin({ token, onClose }) {
     if (value === null) return;
     const quotaLimitBytes = Math.round(Number(value) * 1024 ** 3);
     if (!Number.isSafeInteger(quotaLimitBytes) || quotaLimitBytes < 0)
-      return setMessage("Quota must be a non-negative number of GB.");
+      return showAdminError(
+        new Error("Quota must be a non-negative number of GB."),
+      );
     try {
       const { data } = await api.patch(
         `/admin/folders/${selected.id}`,
@@ -977,9 +1283,9 @@ function Admin({ token, onClose }) {
       );
       setSelected(data);
       await load();
-      setMessage("Folder quota updated.");
+      showAdminSuccess("Folder quota updated successfully.");
     } catch (e) {
-      setMessage(e.response?.data?.error || e.message);
+      showAdminError(e);
     }
   }
   async function deleteFolder() {
@@ -994,11 +1300,12 @@ function Admin({ token, onClose }) {
       await api.delete(`/admin/folders/${selected.id}`, { headers });
       setSelected(null);
       setPermissions([]);
+      setPermissionDrafts([]);
       setChildren([]);
       await load();
-      setMessage("Folder deleted.");
+      showAdminSuccess("Folder deleted successfully.");
     } catch (e) {
-      setMessage(e.response?.data?.error || e.message);
+      showAdminError(e);
     }
   }
   const permissionFor = (user) =>
@@ -1007,41 +1314,105 @@ function Admin({ token, onClose }) {
       can_write: false,
       can_delete: false,
     };
-  async function savePermission(user, field, checked) {
-    const current = permissionFor(user);
-    const next = {
-      canRead: current.can_read,
-      canWrite: current.can_write,
-      canDelete: current.can_delete,
+  const draftPermissionFor = (user) =>
+    permissionDrafts.find((p) => p.user_id === user.id) || {
+      user_id: user.id,
+      can_read: false,
+      can_write: false,
+      can_delete: false,
     };
-    next[field] = checked;
-    // A write/delete choice necessarily needs read; keeping this client-side prevents an invalid request.
-    if ((field === "canWrite" || field === "canDelete") && checked)
-      next.canRead = true;
+  function updatePermissionDraft(user, field, checked) {
+    const keyByField = {
+      canRead: "can_read",
+      canWrite: "can_write",
+      canDelete: "can_delete",
+    };
+    setPermissionDrafts((currentDrafts) => {
+      const current = draftPermissionFor(user);
+      const next = { ...current, [keyByField[field]]: checked };
+      if ((field === "canWrite" || field === "canDelete") && checked)
+        next.can_read = true;
+      if (field === "canRead" && !checked) {
+        next.can_write = false;
+        next.can_delete = false;
+      }
+      const exists = currentDrafts.some((item) => item.user_id === user.id);
+      return exists
+        ? currentDrafts.map((item) => (item.user_id === user.id ? next : item))
+        : [...currentDrafts, next];
+    });
+  }
+  const hasPermissionChanges = users
+    .filter((user) => !user.is_admin)
+    .some((user) => {
+      const saved = permissionFor(user);
+      const draft = draftPermissionFor(user);
+      return (
+        saved.can_read !== draft.can_read ||
+        saved.can_write !== draft.can_write ||
+        saved.can_delete !== draft.can_delete
+      );
+    });
+  function cancelPermissionChanges() {
+    setPermissionDrafts(permissions.map(item => ({ ...item })));
+    setMessage(null);
+  }
+  async function savePermissions() {
+    if (!selected || !hasPermissionChanges) return;
     try {
       await api.put(
-        `/admin/folders/${selected.id}/permissions/${user.id}`,
-        next,
+        `/admin/folders/${selected.id}/permissions`,
+        {
+          permissions: users
+            .filter((user) => !user.is_admin)
+            .map((user) => {
+              const draft = draftPermissionFor(user);
+              return {
+                userId: user.id,
+                canRead: draft.can_read,
+                canWrite: draft.can_write,
+                canDelete: draft.can_delete,
+              };
+            }),
+        },
         { headers },
       );
       await selectFolder(selected);
+      showAdminSuccess("Folder permissions saved successfully.");
     } catch (e) {
-      setMessage(e.response?.data?.error || e.message);
+      showAdminError(e);
     }
   }
   const diskPercent = disk ? (disk.usedBytes / disk.totalBytes) * 100 : 0;
+  function closeAdmin() {
+    if (
+      hasPermissionChanges &&
+      !confirm("Discard unsaved permission changes and close Administration?")
+    ) {
+      return;
+    }
+    onClose();
+  }
   return (
     <main className="w-full p-5">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="flex items-center gap-2 text-2xl font-bold">
           <Shield /> Administration
         </h1>
-        <button onClick={onClose} className="rounded p-2 hover:bg-slate-200">
+        <button onClick={closeAdmin} className="rounded p-2 hover:bg-slate-200">
           <X />
         </button>
       </div>
       {message && (
-        <p className="mb-4 rounded bg-red-50 p-3 text-red-700">{message}</p>
+        <p
+          className={`mb-4 rounded border p-3 ${
+            message.type === "success"
+              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+              : "border-red-200 bg-red-50 text-red-700"
+          }`}
+        >
+          {message.text}
+        </p>
       )}
       <div className="grid gap-5 lg:grid-cols-3">
         <Panel title="Server disk status">
@@ -1180,7 +1551,30 @@ function Admin({ token, onClose }) {
                   </div>
                 </>
               )}
-              <h3 className="mb-2 font-semibold">Permissions</h3>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold">Permissions</h3>
+                  <p className="text-xs text-slate-500">
+                    Changes are applied only after you press Save.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={cancelPermissionChanges}
+                    disabled={!hasPermissionChanges}
+                    className="rounded border px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={savePermissions}
+                    disabled={!hasPermissionChanges}
+                    className="rounded bg-sky-600 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Save changes
+                  </button>
+                </div>
+              </div>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left">
@@ -1194,7 +1588,7 @@ function Admin({ token, onClose }) {
                   {users
                     .filter((u) => !u.is_admin)
                     .map((user) => {
-                      const p = permissionFor(user);
+                      const p = draftPermissionFor(user);
                       return (
                         <tr key={user.id} className="border-b">
                           <td className="p-2">{user.username}</td>
@@ -1208,7 +1602,11 @@ function Admin({ token, onClose }) {
                                 type="checkbox"
                                 checked={checked}
                                 onChange={(e) =>
-                                  savePermission(user, field, e.target.checked)
+                                  updatePermissionDraft(
+                                    user,
+                                    field,
+                                    e.target.checked,
+                                  )
                                 }
                               />
                             </td>
@@ -1236,13 +1634,18 @@ export default function App() {
     setSession(data);
   }
   if (!session) return <Login onLogin={login} />;
-  return admin ? (
-    <Admin token={session.token} onClose={() => setAdmin(false)} />
-  ) : (
-    <Drive
-      token={session.token}
-      user={session.user}
-      openAdmin={() => setAdmin(true)}
-    />
+  return (
+    <>
+      <Drive
+        token={session.token}
+        user={session.user}
+        openAdmin={() => setAdmin(true)}
+      />
+      {admin && (
+        <div className="fixed inset-0 z-40 overflow-y-auto bg-slate-100">
+          <Admin token={session.token} onClose={() => setAdmin(false)} />
+        </div>
+      )}
+    </>
   );
 }

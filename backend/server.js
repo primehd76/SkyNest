@@ -729,6 +729,59 @@ app.delete("/api/admin/folders/:folderId", requireAuth, requireAdmin, async (req
   } catch (error) { next(error); }
 });
 app.get("/api/admin/folders/:folderId/permissions", requireAuth, requireAdmin, async (req, res, next) => { try { res.json((await pool.query("SELECT user_id, can_read, can_write, can_delete FROM folder_permissions WHERE folder_id = $1", [req.params.folderId])).rows); } catch (e) { next(e); } });
+app.put("/api/admin/folders/:folderId/permissions", requireAuth, requireAdmin, async (req, res, next) => {
+  let client;
+  try {
+    client = await pool.connect();
+    await getFolder(req.params.folderId);
+    const updates = Array.isArray(req.body.permissions)
+      ? req.body.permissions
+      : [];
+    for (const update of updates) {
+      if (!Number.isSafeInteger(Number(update.userId))) {
+        throw new Error("Invalid permission user.");
+      }
+      if ((update.canWrite || update.canDelete) && !update.canRead) {
+        throw new Error("Write or delete requires read permission.");
+      }
+    }
+
+    await client.query("BEGIN");
+    for (const update of updates) {
+      if (!update.canRead && !update.canWrite && !update.canDelete) {
+        await client.query(
+          "DELETE FROM folder_permissions WHERE folder_id = $1 AND user_id = $2",
+          [req.params.folderId, update.userId],
+        );
+      } else {
+        await client.query(
+          `INSERT INTO folder_permissions
+             (folder_id, user_id, can_read, can_write, can_delete)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (user_id, folder_id)
+           DO UPDATE SET
+             can_read = EXCLUDED.can_read,
+             can_write = EXCLUDED.can_write,
+             can_delete = EXCLUDED.can_delete`,
+          [
+            req.params.folderId,
+            update.userId,
+            Boolean(update.canRead),
+            Boolean(update.canWrite),
+            Boolean(update.canDelete),
+          ],
+        );
+      }
+    }
+    await client.query("COMMIT");
+    res.status(204).end();
+  } catch (error) {
+    await client?.query("ROLLBACK").catch(() => {});
+    next(error);
+  } finally {
+    client?.release();
+  }
+});
 app.put("/api/admin/folders/:folderId/permissions/:userId", requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const { canRead, canWrite, canDelete } = req.body;
