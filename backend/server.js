@@ -133,15 +133,22 @@ async function requireFolderPermission(req, res, next) {
   try {
     const folder = await getFolder(req.params.folderId);
     if (req.user.isAdmin) { req.folder = folder; req.permission = { can_read: true, can_write: true, can_delete: true }; return next(); }
-    const result = await pool.query(
-      "SELECT can_read, can_write, can_delete FROM folder_permissions WHERE user_id = $1 AND folder_id = $2",
-      [req.user.id, folder.id]
-    );
-    if (!result.rowCount) return res.status(403).json({ error: "You do not have access to this folder." });
+    const permission = await getEffectivePermission(req.user.id, folder);
+    if (!permission) return res.status(403).json({ error: "You do not have access to this folder." });
     req.folder = folder;
-    req.permission = result.rows[0];
+    req.permission = permission;
     next();
   } catch (error) { res.status(error.message === "Folder not found." ? 404 : 400).json({ error: error.message }); }
+}
+
+async function getEffectivePermission(userId, folder) {
+  let current = folder;
+  while (current) {
+    const result = await pool.query("SELECT can_read, can_write, can_delete FROM folder_permissions WHERE user_id = $1 AND folder_id = $2", [userId, current.id]);
+    if (result.rowCount) return result.rows[0];
+    current = current.parent_id ? await getFolder(current.parent_id) : null;
+  }
+  return null;
 }
 
 function requireCapability(capability) {
@@ -153,11 +160,10 @@ function requireCapability(capability) {
 async function listFolders(user, parentId = null) {
   const parentClause = parentId === null ? "f.parent_id IS NULL" : "f.parent_id = $1";
   const params = parentId === null ? [] : [parentId];
-  const query = user.isAdmin
-    ? `SELECT f.*, TRUE can_read, TRUE can_write, TRUE can_delete FROM shared_folders f WHERE ${parentClause} ORDER BY folder_name`
-    : `SELECT f.*, p.can_read, p.can_write, p.can_delete FROM shared_folders f JOIN folder_permissions p ON p.folder_id = f.id WHERE ${parentClause} AND p.user_id = $${params.length + 1} AND p.can_read ORDER BY folder_name`;
-  if (!user.isAdmin) params.push(user.id);
-  return (await pool.query(query, params)).rows;
+  const rows = (await pool.query(`SELECT f.* FROM shared_folders f WHERE ${parentClause} ORDER BY folder_name`, params)).rows;
+  if (user.isAdmin) return rows.map(folder => ({ ...folder, can_read: true, can_write: true, can_delete: true }));
+  const visible = await Promise.all(rows.map(async folder => ({ folder, permission: await getEffectivePermission(user.id, folder) })));
+  return visible.filter(({ permission }) => permission?.can_read).map(({ folder, permission }) => ({ ...folder, ...permission }));
 }
 
 async function createInitialAdmin() {
@@ -320,6 +326,14 @@ app.post("/api/folders/:folderId/subfolders", requireAuth, requireFolderPermissi
       [req.user.id, folder.id]
     );
     res.status(201).json(folder);
+  } catch (error) { next(error); }
+});
+app.delete("/api/folders/:folderId", requireAuth, requireFolderPermission, requireCapability("can_delete"), async (req, res, next) => {
+  try {
+    // rmdir rejects non-empty folders, preventing accidental loss of nested files.
+    await fs.rmdir(await getFolderDiskPath(req.folder));
+    await pool.query("DELETE FROM shared_folders WHERE id = $1", [req.folder.id]);
+    res.status(204).end();
   } catch (error) { next(error); }
 });
 app.patch("/api/admin/folders/:folderId", requireAuth, requireAdmin, async (req, res, next) => {
