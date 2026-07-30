@@ -236,28 +236,38 @@ app.get("/api/folders/:folderId", requireAuth, requireFolderPermission, requireC
 app.get("/api/folders/:folderId/files", requireAuth, requireFolderPermission, requireCapability("can_read"), async (req, res, next) => {
   try {
     const diskPath = await getFolderDiskPath(req.folder);
+    const rootFolder = (await getFolderTrail(req.folder))[0];
+    const rootDiskPath = await getFolderDiskPath(rootFolder);
     const entries = await fs.readdir(diskPath, { withFileTypes: true });
     const files = await Promise.all(entries.filter(e => e.isFile()).map(async entry => {
       const stat = await fs.stat(path.join(diskPath, entry.name));
       return { name: entry.name, size: stat.size, modifiedAt: stat.mtime };
     }));
-    const usedBytes = await getDirectorySize(diskPath);
+    const usedBytes = await getDirectorySize(rootDiskPath);
     const folders = await listFolders(req.user, req.folder.id);
-    res.json({ folders, files, usedBytes, quotaLimitBytes: Number(req.folder.quota_limit_bytes), permissions: req.permission });
+    res.json({
+      folders,
+      files,
+      usedBytes,
+      quotaLimitBytes: Number(rootFolder.quota_limit_bytes),
+      quotaFolderName: rootFolder.folder_name,
+      permissions: req.permission
+    });
   } catch (error) { next(error); }
 });
 
 app.post("/api/folders/:folderId/upload", requireAuth, requireFolderPermission, requireCapability("can_write"), upload.single("file"), async (req, res, next) => {
   try {
     if (!req.file) throw new Error("Choose a file to upload.");
-    const diskPath = await getFolderDiskPath(req.folder);
+    const rootFolder = (await getFolderTrail(req.folder))[0];
+    const rootDiskPath = await getFolderDiskPath(rootFolder);
     const relativePath = cleanRelativePath(req.body.relativePath || req.file.originalname);
     const requestedFilename = relativePath.pop();
     let targetFolder = req.folder;
     for (const segment of relativePath) targetFolder = await ensureSubfolder(targetFolder, segment);
     const targetDirectory = await getFolderDiskPath(targetFolder);
-    const usedBytes = await getDirectorySize(diskPath);
-    if (usedBytes + req.file.size > Number(req.folder.quota_limit_bytes)) {
+    const usedBytes = await getDirectorySize(rootDiskPath);
+    if (usedBytes + req.file.size > Number(rootFolder.quota_limit_bytes)) {
       await fs.unlink(req.file.path);
       return res.status(413).json({ error: "Upload rejected: this folder quota would be exceeded." });
     }
