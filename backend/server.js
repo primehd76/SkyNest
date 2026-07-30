@@ -98,6 +98,17 @@ async function getFolderDiskPath(folder) {
   return storagePath(...names);
 }
 
+async function getFolderTrail(folder) {
+  const trail = [folder];
+  let parentId = folder.parent_id;
+  while (parentId) {
+    const parent = await getFolder(parentId);
+    trail.unshift(parent);
+    parentId = parent.parent_id;
+  }
+  return trail;
+}
+
 function parseQuota(value) {
   const quota = Number(value);
   if (!Number.isSafeInteger(quota) || quota < 0) throw new Error("Quota must be a non-negative whole number of bytes.");
@@ -171,6 +182,11 @@ app.get("/api/folders", requireAuth, async (req, res, next) => {
     if (parentId !== null && (!Number.isSafeInteger(parentId) || parentId < 1)) throw new Error("Invalid parent folder.");
     res.json(await listFolders(req.user, parentId));
   } catch (error) { next(error); }
+});
+
+app.get("/api/folders/:folderId", requireAuth, requireFolderPermission, requireCapability("can_read"), async (req, res, next) => {
+  try { res.json({ folder: req.folder, trail: await getFolderTrail(req.folder) }); }
+  catch (error) { next(error); }
 });
 
 app.get("/api/folders/:folderId/files", requireAuth, requireFolderPermission, requireCapability("can_read"), async (req, res, next) => {
