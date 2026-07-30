@@ -5,7 +5,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import pg from "pg";
 import path from "node:path";
-import { promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import archiver from "archiver";
 
 const { Pool } = pg;
@@ -92,6 +92,72 @@ async function getFolder(folderId) {
   const result = await pool.query("SELECT * FROM shared_folders WHERE id = $1", [folderId]);
   if (!result.rowCount) throw new Error("Folder not found.");
   return result.rows[0];
+}
+
+async function moveUploadedFileUniquely(directory, requestedFilename, sourcePath) {
+  const safeFilename = cleanName(requestedFilename, "File name");
+  const extension = path.extname(safeFilename);
+  const stem = path.basename(safeFilename, extension);
+  let index = 0;
+
+  while (true) {
+    const filename = index ? `${stem} (${index})${extension}` : safeFilename;
+    const targetPath = path.join(directory, filename);
+    try {
+      // Atomically reserve the destination without copying or overwriting a
+      // large file that another client may have uploaded at the same time.
+      await fs.link(sourcePath, targetPath);
+      try {
+        await fs.unlink(sourcePath);
+      } catch (error) {
+        await fs.unlink(targetPath).catch(() => {});
+        throw error;
+      }
+      return filename;
+    } catch (error) {
+      if (error.code === "EEXIST") {
+        index += 1;
+        continue;
+      }
+      if (error.code === "EXDEV" || error.code === "EPERM") {
+        try {
+          await fs.copyFile(sourcePath, targetPath, fsConstants.COPYFILE_EXCL);
+          await fs.unlink(sourcePath);
+          return filename;
+        } catch (copyError) {
+          if (copyError.code === "EEXIST") {
+            index += 1;
+            continue;
+          }
+          throw copyError;
+        }
+      }
+      throw error;
+    }
+  }
+}
+
+async function getUniqueSubfolderName(parent, requestedName) {
+  const safeName = cleanName(requestedName, "Folder name");
+  const parentPath = await getFolderDiskPath(parent);
+  let index = 0;
+
+  while (true) {
+    const name = index ? `${safeName} (${index})` : safeName;
+    const existing = await pool.query(
+      "SELECT 1 FROM shared_folders WHERE parent_id = $1 AND folder_name = $2",
+      [parent.id, name],
+    );
+    let existsOnDisk = false;
+    try {
+      await fs.access(path.join(parentPath, name));
+      existsOnDisk = true;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (!existing.rowCount && !existsOnDisk) return name;
+    index += 1;
+  }
 }
 
 function requireDownloadTicket(req, res, next) {
@@ -271,8 +337,11 @@ app.post("/api/folders/:folderId/upload", requireAuth, requireFolderPermission, 
       await fs.unlink(req.file.path);
       return res.status(413).json({ error: "Upload rejected: this folder quota would be exceeded." });
     }
-    const filename = await getUniqueFilename(targetDirectory, requestedFilename);
-    await fs.rename(req.file.path, path.join(targetDirectory, filename));
+    const filename = await moveUploadedFileUniquely(
+      targetDirectory,
+      requestedFilename,
+      req.file.path,
+    );
     res.status(201).json({ name: [...relativePath, filename].join("/") });
   } catch (error) {
     await fs.unlink(req.file?.path).catch(() => {});
@@ -363,7 +432,9 @@ app.post("/api/admin/folders", requireAuth, requireAdmin, async (req, res, next)
 });
 app.post("/api/folders/:folderId/subfolders", requireAuth, requireFolderPermission, requireCapability("can_write"), async (req, res, next) => {
   try {
-    const name = cleanName(req.body.folderName, "Folder name");
+    const name = req.body.makeUnique
+      ? await getUniqueSubfolderName(req.folder, req.body.folderName)
+      : cleanName(req.body.folderName, "Folder name");
     // Subfolders share the root folder's capacity. Only a root folder has its own limit.
     const quota = Number(req.folder.quota_limit_bytes);
     const result = await pool.query(
@@ -372,10 +443,6 @@ app.post("/api/folders/:folderId/subfolders", requireAuth, requireFolderPermissi
     );
     const folder = result.rows[0];
     await fs.mkdir(await getFolderDiskPath(folder), { recursive: true });
-    if (!req.user.isAdmin) await pool.query(
-      "INSERT INTO folder_permissions (user_id, folder_id, can_read, can_write, can_delete) VALUES ($1, $2, TRUE, TRUE, TRUE)",
-      [req.user.id, folder.id]
-    );
     res.status(201).json(folder);
   } catch (error) { next(error); }
 });
@@ -454,4 +521,9 @@ await fs.mkdir(UPLOAD_TEMP_ROOT, { recursive: true });
 await migrateDatabase();
 for (const rootFolder of await listFolders({ isAdmin: true })) await reconcileStorageFolders(rootFolder);
 await createInitialAdmin();
-app.listen(PORT, () => console.log(`SkyNest API listening on ${PORT}`));
+const server = app.listen(PORT, () =>
+  console.log(`SkyNest API listening on ${PORT}`),
+);
+// Large uploads may legitimately take longer than Node's default request
+// timeout. Authentication and Multer's size limit still constrain requests.
+server.requestTimeout = 0;

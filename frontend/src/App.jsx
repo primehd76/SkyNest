@@ -310,13 +310,36 @@ function Drive({ token, user, openAdmin }) {
     if (!files.length || !active) return;
     // CancelToken is retained here because this is the requested Axios cancellation API.
     // The source is stored in state so the visible cancel button can abort this exact upload.
-    const targetFolder = active;
+    const uploadParent = active;
+    let targetFolder = uploadParent;
+    const isFolderUpload = files.some((file) => file.webkitRelativePath);
+    const uploadedRootName = isFolderUpload
+      ? files[0].webkitRelativePath.split(/[\\/]/)[0]
+      : null;
     let completed = true;
+    if (uploadedRootName) {
+      setMessage(`Preparing folder ${uploadedRootName}...`);
+      try {
+        const { data } = await api.post(
+          `/folders/${uploadParent.id}/subfolders`,
+          { folderName: uploadedRootName, makeUnique: true },
+          { headers },
+        );
+        targetFolder = data;
+      } catch (e) {
+        showError(e);
+        return;
+      }
+    }
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index],
         cancelSource = axios.CancelToken.source();
+      const browserPath = file.webkitRelativePath || file.name;
+      const relativePath = uploadedRootName
+        ? browserPath.split(/[\\/]/).slice(1).join("/")
+        : browserPath;
       setUpload({
-        name: file.webkitRelativePath || file.name,
+        name: browserPath,
         progress: null,
         cancelSource,
         index: index + 1,
@@ -325,7 +348,7 @@ function Drive({ token, user, openAdmin }) {
       setMessage("");
       try {
         const form = new FormData();
-        form.append("relativePath", file.webkitRelativePath || file.name);
+        form.append("relativePath", relativePath);
         form.append("file", file);
         await api.post(`/folders/${targetFolder.id}/upload`, form, {
           headers,
@@ -348,8 +371,8 @@ function Drive({ token, user, openAdmin }) {
         break;
       }
     }
-    if (activeRef.current?.id === targetFolder.id)
-      await refreshFiles(targetFolder);
+    if (activeRef.current?.id === uploadParent.id)
+      await refreshFiles(uploadParent);
     setUpload(null);
     if (completed) setMessage("Upload complete.");
   }
@@ -728,8 +751,12 @@ function Drive({ token, user, openAdmin }) {
               <p className="truncate">Uploading {upload.name}</p>
               <p className="mt-1 text-slate-500">
                 {upload.progress === null
-                  ? "Preparing upload…"
-                  : `${upload.progress}% complete`}
+                  ? "Preparing upload..."
+                  : upload.progress >= 100
+                    ? "Finishing on server..."
+                    : `${upload.progress}% complete`}
+                {upload.total > 1 &&
+                  ` - file ${upload.index} of ${upload.total}`}
               </p>
             </div>
             <button
