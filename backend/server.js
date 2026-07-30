@@ -34,9 +34,9 @@ function cleanName(value, label = "Name") {
   return name;
 }
 
-function folderPath(folderName) {
+function storagePath(...segments) {
   // Resolve and verify again so a database value can never escape STORAGE_ROOT.
-  const candidate = path.resolve(STORAGE_ROOT, folderName);
+  const candidate = path.resolve(STORAGE_ROOT, ...segments);
   if (!candidate.startsWith(`${STORAGE_ROOT}${path.sep}`)) throw new Error("Unsafe folder path.");
   return candidate;
 }
@@ -87,6 +87,23 @@ async function getFolder(folderId) {
   return result.rows[0];
 }
 
+async function getFolderDiskPath(folder) {
+  const names = [folder.folder_name];
+  let parentId = folder.parent_id;
+  while (parentId) {
+    const parent = await getFolder(parentId);
+    names.unshift(parent.folder_name);
+    parentId = parent.parent_id;
+  }
+  return storagePath(...names);
+}
+
+function parseQuota(value) {
+  const quota = Number(value);
+  if (!Number.isSafeInteger(quota) || quota < 0) throw new Error("Quota must be a non-negative whole number of bytes.");
+  return quota;
+}
+
 async function requireFolderPermission(req, res, next) {
   try {
     const folder = await getFolder(req.params.folderId);
@@ -108,12 +125,32 @@ function requireCapability(capability) {
     : res.status(403).json({ error: `This folder does not grant ${capability.replace("can_", "")} permission.` });
 }
 
+async function listFolders(user, parentId = null) {
+  const parentClause = parentId === null ? "f.parent_id IS NULL" : "f.parent_id = $1";
+  const params = parentId === null ? [] : [parentId];
+  const query = user.isAdmin
+    ? `SELECT f.*, TRUE can_read, TRUE can_write, TRUE can_delete FROM shared_folders f WHERE ${parentClause} ORDER BY folder_name`
+    : `SELECT f.*, p.can_read, p.can_write, p.can_delete FROM shared_folders f JOIN folder_permissions p ON p.folder_id = f.id WHERE ${parentClause} AND p.user_id = $${params.length + 1} AND p.can_read ORDER BY folder_name`;
+  if (!user.isAdmin) params.push(user.id);
+  return (await pool.query(query, params)).rows;
+}
+
 async function createInitialAdmin() {
   const count = await pool.query("SELECT COUNT(*)::int AS count FROM users");
   if (count.rows[0].count || !process.env.INITIAL_ADMIN_USERNAME || !process.env.INITIAL_ADMIN_PASSWORD) return;
   const hash = await bcrypt.hash(process.env.INITIAL_ADMIN_PASSWORD, 12);
   await pool.query("INSERT INTO users (username, password_hash, is_admin) VALUES ($1, $2, TRUE)", [process.env.INITIAL_ADMIN_USERNAME, hash]);
   console.log("Initial SkyNest administrator created.");
+}
+
+async function migrateDatabase() {
+  // Existing deployments predate nested folders, so keep their root folders intact
+  // while adding the nullable parent relation in place.
+  await pool.query("ALTER TABLE shared_folders ADD COLUMN IF NOT EXISTS parent_id INTEGER REFERENCES shared_folders(id) ON DELETE CASCADE");
+  await pool.query("CREATE INDEX IF NOT EXISTS shared_folders_parent_id_idx ON shared_folders(parent_id)");
+  // Folder names only need to be unique within their parent, just like a file system.
+  await pool.query("ALTER TABLE shared_folders DROP CONSTRAINT IF EXISTS shared_folders_folder_name_key");
+  await pool.query("CREATE UNIQUE INDEX IF NOT EXISTS shared_folders_parent_name_idx ON shared_folders(parent_id, folder_name)");
 }
 
 app.post("/api/auth/login", async (req, res, next) => {
@@ -130,31 +167,30 @@ app.get("/api/auth/me", requireAuth, (req, res) => res.json({ id: req.user.id, u
 
 app.get("/api/folders", requireAuth, async (req, res, next) => {
   try {
-    const query = req.user.isAdmin
-      ? "SELECT f.*, TRUE can_read, TRUE can_write, TRUE can_delete FROM shared_folders f ORDER BY folder_name"
-      : "SELECT f.*, p.can_read, p.can_write, p.can_delete FROM shared_folders f JOIN folder_permissions p ON p.folder_id = f.id WHERE p.user_id = $1 AND p.can_read ORDER BY f.folder_name";
-    const result = await pool.query(query, req.user.isAdmin ? [] : [req.user.id]);
-    res.json(result.rows);
+    const parentId = req.query.parentId === undefined ? null : Number(req.query.parentId);
+    if (parentId !== null && (!Number.isSafeInteger(parentId) || parentId < 1)) throw new Error("Invalid parent folder.");
+    res.json(await listFolders(req.user, parentId));
   } catch (error) { next(error); }
 });
 
 app.get("/api/folders/:folderId/files", requireAuth, requireFolderPermission, requireCapability("can_read"), async (req, res, next) => {
   try {
-    const diskPath = folderPath(req.folder.folder_name);
+    const diskPath = await getFolderDiskPath(req.folder);
     const entries = await fs.readdir(diskPath, { withFileTypes: true });
     const files = await Promise.all(entries.filter(e => e.isFile()).map(async entry => {
       const stat = await fs.stat(path.join(diskPath, entry.name));
       return { name: entry.name, size: stat.size, modifiedAt: stat.mtime };
     }));
     const usedBytes = await getDirectorySize(diskPath);
-    res.json({ files, usedBytes, quotaLimitBytes: Number(req.folder.quota_limit_bytes), permissions: req.permission });
+    const folders = await listFolders(req.user, req.folder.id);
+    res.json({ folders, files, usedBytes, quotaLimitBytes: Number(req.folder.quota_limit_bytes), permissions: req.permission });
   } catch (error) { next(error); }
 });
 
 app.post("/api/folders/:folderId/upload", requireAuth, requireFolderPermission, requireCapability("can_write"), upload.single("file"), async (req, res, next) => {
   try {
     if (!req.file) throw new Error("Choose a file to upload.");
-    const diskPath = folderPath(req.folder.folder_name);
+    const diskPath = await getFolderDiskPath(req.folder);
     const usedBytes = await getDirectorySize(diskPath);
     if (usedBytes + req.file.size > Number(req.folder.quota_limit_bytes)) {
       await fs.unlink(req.file.path);
@@ -170,21 +206,25 @@ app.post("/api/folders/:folderId/upload", requireAuth, requireFolderPermission, 
 });
 
 app.get("/api/folders/:folderId/files/:filename/download", requireAuth, requireFolderPermission, requireCapability("can_read"), async (req, res, next) => {
-  try { const name = cleanName(req.params.filename, "File name"); res.download(path.join(folderPath(req.folder.folder_name), name), name); }
+  try { const name = cleanName(req.params.filename, "File name"); res.download(path.join(await getFolderDiskPath(req.folder), name), name); }
   catch (error) { next(error); }
 });
 
 app.patch("/api/folders/:folderId/files/:filename", requireAuth, requireFolderPermission, requireCapability("can_write"), async (req, res, next) => {
   try {
     const oldName = cleanName(req.params.filename, "File name");
-    const newName = await getUniqueFilename(folderPath(req.folder.folder_name), req.body.name);
-    await fs.rename(path.join(folderPath(req.folder.folder_name), oldName), path.join(folderPath(req.folder.folder_name), newName));
+    const diskPath = await getFolderDiskPath(req.folder);
+    let requestedName = cleanName(req.body.name, "File name");
+    const originalExtension = path.extname(oldName);
+    if (originalExtension) requestedName = `${path.basename(requestedName, path.extname(requestedName))}${originalExtension}`;
+    const newName = await getUniqueFilename(diskPath, requestedName);
+    await fs.rename(path.join(diskPath, oldName), path.join(diskPath, newName));
     res.json({ name: newName });
   } catch (error) { next(error); }
 });
 
 app.delete("/api/folders/:folderId/files/:filename", requireAuth, requireFolderPermission, requireCapability("can_delete"), async (req, res, next) => {
-  try { await fs.unlink(path.join(folderPath(req.folder.folder_name), cleanName(req.params.filename, "File name"))); res.status(204).end(); }
+  try { await fs.unlink(path.join(await getFolderDiskPath(req.folder), cleanName(req.params.filename, "File name"))); res.status(204).end(); }
   catch (error) { next(error); }
 });
 
@@ -211,26 +251,42 @@ app.post("/api/admin/users", requireAuth, requireAdmin, async (req, res, next) =
 app.post("/api/admin/folders", requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const name = cleanName(req.body.folderName, "Folder name");
-    const quota = Number(req.body.quotaLimitBytes);
-    if (!Number.isSafeInteger(quota) || quota < 0) throw new Error("Quota must be a non-negative whole number of bytes.");
+    const quota = parseQuota(req.body.quotaLimitBytes);
     const result = await pool.query("INSERT INTO shared_folders (folder_name, quota_limit_bytes) VALUES ($1, $2) RETURNING *", [name, quota]);
-    await fs.mkdir(folderPath(name), { recursive: true });
+    await fs.mkdir(await getFolderDiskPath(result.rows[0]), { recursive: true });
     res.status(201).json(result.rows[0]);
+  } catch (error) { next(error); }
+});
+app.post("/api/folders/:folderId/subfolders", requireAuth, requireFolderPermission, requireCapability("can_write"), async (req, res, next) => {
+  try {
+    const name = cleanName(req.body.folderName, "Folder name");
+    const quota = parseQuota(req.body.quotaLimitBytes);
+    const result = await pool.query(
+      "INSERT INTO shared_folders (parent_id, folder_name, quota_limit_bytes) VALUES ($1, $2, $3) RETURNING *",
+      [req.folder.id, name, quota]
+    );
+    const folder = result.rows[0];
+    await fs.mkdir(await getFolderDiskPath(folder), { recursive: true });
+    if (!req.user.isAdmin) await pool.query(
+      "INSERT INTO folder_permissions (user_id, folder_id, can_read, can_write, can_delete) VALUES ($1, $2, TRUE, TRUE, TRUE)",
+      [req.user.id, folder.id]
+    );
+    res.status(201).json(folder);
   } catch (error) { next(error); }
 });
 app.patch("/api/admin/folders/:folderId", requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const folder = await getFolder(req.params.folderId);
     const name = cleanName(req.body.folderName ?? folder.folder_name, "Folder name");
-    const quota = Number(req.body.quotaLimitBytes ?? folder.quota_limit_bytes);
-    if (!Number.isSafeInteger(quota) || quota < 0) throw new Error("Quota must be a non-negative whole number of bytes.");
+    const quota = parseQuota(req.body.quotaLimitBytes ?? folder.quota_limit_bytes);
 
-    const currentPath = folderPath(folder.folder_name);
+    const currentPath = await getFolderDiskPath(folder);
     const usedBytes = await getDirectorySize(currentPath);
     if (quota < usedBytes) throw new Error(`Quota cannot be lower than the ${usedBytes} bytes currently stored in this folder.`);
 
     const renamed = name !== folder.folder_name;
-    const nextPath = folderPath(name);
+    const parentSegments = path.relative(STORAGE_ROOT, path.dirname(currentPath)).split(path.sep).filter(Boolean);
+    const nextPath = storagePath(...parentSegments, name);
     if (renamed) {
       try {
         await fs.access(nextPath);
@@ -256,7 +312,7 @@ app.delete("/api/admin/folders/:folderId", requireAuth, requireAdmin, async (req
   try {
     const folder = await getFolder(req.params.folderId);
     // rmdir intentionally refuses a non-empty directory, so delete cannot remove files by accident.
-    await fs.rmdir(folderPath(folder.folder_name));
+    await fs.rmdir(await getFolderDiskPath(folder));
     await pool.query("DELETE FROM shared_folders WHERE id = $1", [folder.id]);
     res.status(204).end();
   } catch (error) { next(error); }
@@ -282,5 +338,6 @@ app.use((error, _req, res, _next) => {
 
 await fs.mkdir(STORAGE_ROOT, { recursive: true });
 await fs.mkdir(UPLOAD_TEMP_ROOT, { recursive: true });
+await migrateDatabase();
 await createInitialAdmin();
 app.listen(PORT, () => console.log(`SkyNest API listening on ${PORT}`));

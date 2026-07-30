@@ -7,7 +7,8 @@ CREATE TABLE users (
 
 CREATE TABLE shared_folders (
   id SERIAL PRIMARY KEY,
-  folder_name VARCHAR(120) NOT NULL UNIQUE,
+  parent_id INTEGER REFERENCES shared_folders(id) ON DELETE CASCADE,
+  folder_name VARCHAR(120) NOT NULL,
   quota_limit_bytes BIGINT NOT NULL CHECK (quota_limit_bytes >= 0)
 );
 
