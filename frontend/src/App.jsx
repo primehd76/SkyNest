@@ -97,7 +97,7 @@ function Drive({ token, user, openAdmin }) {
     } catch (e) { showError(e); }
   }
   async function deleteFolder(folder) {
-    if (!confirm(`Delete empty folder ${folder.folder_name}?`)) return;
+    if (!confirm(`Delete folder ${folder.folder_name} and ALL of its contents? This cannot be undone.`)) return;
     try { await api.delete(user.isAdmin ? `/admin/folders/${folder.id}` : `/folders/${folder.id}`, { headers }); setFolderMenu(null); await refreshFolders(); if (active) await refreshFiles(active); }
     catch (e) { showError(e); }
   }

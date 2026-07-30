@@ -129,6 +129,27 @@ function parseQuota(value) {
   return quota;
 }
 
+async function ensureSubfolder(parent, name) {
+  const existing = await pool.query("SELECT * FROM shared_folders WHERE parent_id = $1 AND folder_name = $2", [parent.id, name]);
+  if (existing.rowCount) return existing.rows[0];
+  const result = await pool.query(
+    "INSERT INTO shared_folders (parent_id, folder_name, quota_limit_bytes) VALUES ($1, $2, $3) RETURNING *",
+    [parent.id, name, parent.quota_limit_bytes]
+  );
+  const folder = result.rows[0];
+  await fs.mkdir(await getFolderDiskPath(folder), { recursive: true });
+  return folder;
+}
+
+async function reconcileStorageFolders(parent) {
+  const diskPath = await getFolderDiskPath(parent);
+  const entries = await fs.readdir(diskPath, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries.filter(entry => entry.isDirectory() && entry.name !== ".uploads")) {
+    const child = await ensureSubfolder(parent, entry.name);
+    await reconcileStorageFolders(child);
+  }
+}
+
 async function requireFolderPermission(req, res, next) {
   try {
     const folder = await getFolder(req.params.folderId);
@@ -229,9 +250,9 @@ app.post("/api/folders/:folderId/upload", requireAuth, requireFolderPermission, 
     const diskPath = await getFolderDiskPath(req.folder);
     const relativePath = cleanRelativePath(req.body.relativePath || req.file.originalname);
     const requestedFilename = relativePath.pop();
-    const targetDirectory = path.resolve(diskPath, ...relativePath);
-    if (!targetDirectory.startsWith(`${diskPath}${path.sep}`) && targetDirectory !== diskPath) throw new Error("Unsafe upload path.");
-    await fs.mkdir(targetDirectory, { recursive: true });
+    let targetFolder = req.folder;
+    for (const segment of relativePath) targetFolder = await ensureSubfolder(targetFolder, segment);
+    const targetDirectory = await getFolderDiskPath(targetFolder);
     const usedBytes = await getDirectorySize(diskPath);
     if (usedBytes + req.file.size > Number(req.folder.quota_limit_bytes)) {
       await fs.unlink(req.file.path);
@@ -401,5 +422,6 @@ app.use((error, _req, res, _next) => {
 await fs.mkdir(STORAGE_ROOT, { recursive: true });
 await fs.mkdir(UPLOAD_TEMP_ROOT, { recursive: true });
 await migrateDatabase();
+for (const rootFolder of await listFolders({ isAdmin: true })) await reconcileStorageFolders(rootFolder);
 await createInitialAdmin();
 app.listen(PORT, () => console.log(`SkyNest API listening on ${PORT}`));
