@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { ChevronRight, Cloud, Download, File, FileArchive, FileAudio, FileCode2, FileImage, FileSpreadsheet, FileText, FileVideo, Folder, FolderPlus, HardDrive, LogOut, MoreVertical, Pencil, Plus, Shield, Trash2, Upload, Users, X } from "lucide-react";
 
@@ -49,23 +49,30 @@ function Login({ onLogin }) {
 function Drive({ token, user, openAdmin }) {
   const [folders, setFolders] = useState([]), [active, setActive] = useState(null), [fileData, setFileData] = useState(null);
   const [message, setMessage] = useState(""), [upload, setUpload] = useState(null), [menu, setMenu] = useState(null), [folderMenu, setFolderMenu] = useState(null), [trail, setTrail] = useState([]);
+  const activeRef = useRef(null);
   const headers = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
   const refreshFolders = useCallback(async () => setFolders((await api.get("/folders", { headers })).data), [headers]);
   const refreshFiles = useCallback(async (folder = active) => {
     if (folder) setFileData((await api.get(`/folders/${folder.id}/files`, { headers })).data);
   }, [active, headers]);
+  useEffect(() => { activeRef.current = active; }, [active]);
   useEffect(() => { refreshFolders().catch(showError); }, [refreshFolders]);
   useEffect(() => {
-    const folderId = localStorage.getItem("skynest:lastFolderId");
-    if (!folderId) return;
-    api.get(`/folders/${folderId}`, { headers }).then(({ data }) => {
-      setActive(data.folder); setTrail(data.trail);
-      return refreshFiles(data.folder);
-    }).catch(() => localStorage.removeItem("skynest:lastFolderId"));
+    const restoreFolder = folderId => {
+      if (!folderId) { goHome(false); return; }
+      api.get(`/folders/${folderId}`, { headers }).then(({ data }) => {
+        setActive(data.folder); setTrail(data.trail); return refreshFiles(data.folder);
+      }).catch(() => { localStorage.removeItem("skynest:lastFolderId"); goHome(false); });
+    };
+    const current = new URLSearchParams(window.location.search).get("folder") || localStorage.getItem("skynest:lastFolderId");
+    restoreFolder(current);
+    const onPopState = () => restoreFolder(new URLSearchParams(window.location.search).get("folder"));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
   }, [headers]);
   function showError(error) { setMessage(error.response?.data?.error || error.message || "Something went wrong."); }
-  async function selectFolder(folder, nextTrail = [folder]) { setActive(folder); setMenu(null); setFolderMenu(null); setTrail(nextTrail); localStorage.setItem("skynest:lastFolderId", String(folder.id)); try { await refreshFiles(folder); } catch (e) { showError(e); } }
-  function goHome() { setActive(null); setFileData(null); setTrail([]); setMenu(null); setFolderMenu(null); setMessage(""); localStorage.removeItem("skynest:lastFolderId"); }
+  async function selectFolder(folder, nextTrail = [folder], pushHistory = true) { setActive(folder); setMenu(null); setFolderMenu(null); setTrail(nextTrail); localStorage.setItem("skynest:lastFolderId", String(folder.id)); if (pushHistory) window.history.pushState({ folderId: folder.id }, "", `${window.location.pathname}?folder=${folder.id}`); try { await refreshFiles(folder); } catch (e) { showError(e); } }
+  function goHome(pushHistory = true) { setActive(null); setFileData(null); setTrail([]); setMenu(null); setFolderMenu(null); setMessage(""); localStorage.removeItem("skynest:lastFolderId"); if (pushHistory) window.history.pushState({}, "", window.location.pathname); }
   async function createSubfolder() {
     if (!active) return;
     const folderName = prompt("Folder name"); if (!folderName) return;
@@ -94,18 +101,22 @@ function Drive({ token, user, openAdmin }) {
     catch (e) { showError(e); }
   }
   async function uploadFile(event) {
-    const file = event.target.files?.[0]; event.target.value = "";
-    if (!file || !active) return;
+    const files = Array.from(event.target.files || []); event.target.value = "";
+    if (!files.length || !active) return;
     // CancelToken is retained here because this is the requested Axios cancellation API.
     // The source is stored in state so the visible cancel button can abort this exact upload.
-    const cancelSource = axios.CancelToken.source();
-    setUpload({ name: file.name, progress: null, cancelSource }); setMessage("");
-    try {
-      const form = new FormData(); form.append("file", file);
-      await api.post(`/folders/${active.id}/upload`, form, { headers, cancelToken: cancelSource.token, onUploadProgress: e => setUpload(current => current && ({ ...current, progress: e.total ? Math.min(100, Math.round(e.loaded * 100 / e.total)) : current.progress })) });
-      await refreshFiles(); setMessage("Upload complete.");
-    } catch (e) { if (!axios.isCancel(e)) showError(e); else setMessage("Upload cancelled."); }
-    finally { setUpload(null); }
+    const targetFolder = active;
+    let completed = true;
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index], cancelSource = axios.CancelToken.source();
+      setUpload({ name: file.webkitRelativePath || file.name, progress: null, cancelSource, index: index + 1, total: files.length }); setMessage("");
+      try {
+        const form = new FormData(); form.append("relativePath", file.webkitRelativePath || file.name); form.append("file", file);
+        await api.post(`/folders/${targetFolder.id}/upload`, form, { headers, cancelToken: cancelSource.token, onUploadProgress: e => setUpload(current => current && ({ ...current, progress: e.total ? Math.min(100, Math.round(e.loaded * 100 / e.total)) : current.progress })) });
+      } catch (e) { completed = false; if (!axios.isCancel(e)) showError(e); else setMessage("Upload cancelled."); break; }
+    }
+    if (activeRef.current?.id === targetFolder.id) await refreshFiles(targetFolder);
+    setUpload(null); if (completed) setMessage("Upload complete.");
   }
   async function renameFile(file) {
     const name = prompt("New file name", file.name); if (!name || name === file.name) return;
@@ -118,17 +129,14 @@ function Drive({ token, user, openAdmin }) {
     catch (e) { showError(e); }
   }
   async function downloadFile(file) {
-    // A download link cannot attach our in-memory Authorization header. Fetching a blob keeps
-    // the ACL check intact, then the browser is given a short-lived local download URL.
     try {
-      const response = await api.get(`/folders/${active.id}/files/${encodeURIComponent(file.name)}/download`, { headers, responseType: "blob" });
-      const url = URL.createObjectURL(new Blob([response.data], { type: response.headers["content-type"] || "application/octet-stream" }));
-      const link = Object.assign(document.createElement("a"), { href: url, download: file.name });
-      document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 0);
+      const { data } = await api.post(`/folders/${active.id}/files/${encodeURIComponent(file.name)}/download-ticket`, {}, { headers });
+      const link = Object.assign(document.createElement("a"), { href: data.url, download: file.name });
+      document.body.appendChild(link); link.click(); link.remove();
     } catch (e) { showError(e); }
   }
   const percentage = fileData ? Math.min(100, fileData.usedBytes / fileData.quotaLimitBytes * 100 || 0) : 0;
-  return <div className="min-h-screen">
+  return <div className="min-h-screen">{(menu || folderMenu) && <button aria-label="Close menu" onClick={() => { setMenu(null); setFolderMenu(null); }} className="fixed inset-0 z-10 cursor-default"/>}
     <header className="flex items-center justify-between bg-white px-5 py-3 shadow-sm"><button onClick={goHome} className="flex items-center gap-2 font-bold text-sky-700" title="Back to main page"><Cloud/> SkyNest</button><div className="flex items-center gap-3 text-sm"><span>{user.username}</span>{user.isAdmin && <button onClick={openAdmin} className="rounded bg-slate-100 p-2 hover:bg-slate-200" title="Administration"><Shield size={18}/></button>}<button onClick={() => { localStorage.removeItem("skynest"); location.reload(); }} title="Sign out"><LogOut size={19}/></button></div></header>
     <main className="grid min-h-[calc(100vh-65px)] w-full gap-5 p-5 lg:grid-cols-[240px_minmax(0,1fr)]">
       <aside className="min-h-[calc(100vh-105px)] rounded-xl bg-white p-4 shadow-sm"><h2 className="mb-3 font-semibold">Shared folders</h2>{folders.map(folder => <button key={folder.id} onClick={() => selectFolder(folder, [folder])} className={`mb-1 flex w-full items-center gap-2 rounded p-2 text-left ${active?.id === folder.id ? "bg-sky-100 text-sky-800" : "hover:bg-slate-100"}`}><Folder size={18}/>{folder.folder_name}</button>)}{!folders.length && <p className="text-sm text-slate-500">No folders are assigned to you.</p>}
@@ -137,6 +145,7 @@ function Drive({ token, user, openAdmin }) {
       <section className="min-w-0 min-h-[calc(100vh-105px)] rounded-xl bg-white p-5 shadow-sm">{!active ? <div className="grid min-h-80 place-items-center text-slate-500"><div className="text-center"><Folder className="mx-auto mb-3" size={42}/><p>Select a shared folder.</p></div></div> : <>
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><div><div className="mb-1 flex flex-wrap items-center gap-1 text-sm text-slate-500">{trail.map((folder, index) => <button key={folder.id} onClick={() => selectFolder(folder, trail.slice(0, index + 1))} className="flex items-center hover:text-sky-700">{index > 0 && <ChevronRight size={15}/>} {folder.folder_name}</button>)}</div><h1 className="text-xl font-bold">{active.folder_name}</h1><p className="text-sm text-slate-500">{fileData && `${fileData.files.length} file(s)`}</p></div>{fileData?.permissions.can_write && <div className="flex gap-2"><button onClick={createSubfolder} className="flex items-center gap-2 rounded bg-slate-100 px-3 py-2 text-sm font-medium hover:bg-slate-200"><FolderPlus size={17}/>New folder</button><label className="flex cursor-pointer items-center gap-2 rounded bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-700"><Upload size={17}/> Upload<input className="hidden" type="file" onChange={uploadFile}/></label></div>}</div>
         {message && <p className="mb-3 rounded bg-slate-100 p-3 text-sm">{message}</p>}
+        {fileData?.permissions.can_write && <label className="mb-4 inline-flex cursor-pointer items-center gap-2 rounded bg-slate-100 px-3 py-2 text-sm font-medium hover:bg-slate-200"><FolderPlus size={17}/>Upload folder<input className="hidden" type="file" webkitdirectory="" directory="" multiple onChange={uploadFile}/></label>}
         <div className="mb-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{fileData?.folders.map(folder => <div key={folder.id} className="relative flex items-center rounded-lg border hover:bg-sky-50"><button onClick={() => selectFolder(folder, [...trail, folder])} className="flex min-w-0 flex-1 items-center gap-3 p-3 text-left"><Folder className="shrink-0 text-sky-600"/><span className="truncate font-medium">{folder.folder_name}</span></button><button onClick={() => setFolderMenu(folderMenu === folder.id ? null : folder.id)} className="mr-2 rounded p-2 hover:bg-slate-200" title="Folder actions"><MoreVertical size={18}/></button>{folderMenu === folder.id && <div className="absolute right-2 top-11 z-20 w-48 rounded border bg-white py-1 shadow-lg"><button onClick={() => selectFolder(folder, [...trail, folder])} className="flex w-full gap-2 px-3 py-2 text-left hover:bg-slate-100"><Folder size={16}/>Open</button>{user.isAdmin && <><button onClick={() => renameFolder(folder)} className="flex w-full gap-2 px-3 py-2 text-left hover:bg-slate-100"><Pencil size={16}/>Rename</button>{!folder.parent_id && <button onClick={() => setFolderQuota(folder)} className="flex w-full gap-2 px-3 py-2 text-left hover:bg-slate-100"><HardDrive size={16}/>Set quota</button>}<button onClick={openAdmin} className="flex w-full gap-2 px-3 py-2 text-left hover:bg-slate-100"><Users size={16}/>Manage access</button><button onClick={() => deleteFolder(folder)} className="flex w-full gap-2 px-3 py-2 text-left text-red-600 hover:bg-red-50"><Trash2 size={16}/>Delete empty folder</button></>}</div>}</div>)}</div><div className="overflow-visible"><table className="w-full text-left text-sm"><thead className="border-b text-slate-500"><tr><th className="p-3">Name</th><th className="p-3">Size</th><th className="p-3">Modified</th><th/></tr></thead><tbody>{fileData?.files.map(file => <tr key={file.name} className="border-b hover:bg-slate-50"><td className="p-3 font-medium"><span className="flex items-center gap-2"><FileTypeIcon name={file.name}/>{file.name}</span></td><td className="p-3">{bytes(file.size)}</td><td className="p-3">{new Date(file.modifiedAt).toLocaleString()}</td><td className="relative p-3"><button onClick={() => setMenu(menu === file.name ? null : file.name)}><MoreVertical size={18}/></button>{menu === file.name && <div className="absolute right-3 z-30 mt-1 w-40 rounded border bg-white py-1 shadow-lg"><button className="flex w-full gap-2 px-3 py-2 hover:bg-slate-100" onClick={() => downloadFile(file)}><Download size={16}/>Download</button>{fileData.permissions.can_write && <button className="flex w-full gap-2 px-3 py-2 hover:bg-slate-100" onClick={() => renameFile(file)}><Pencil size={16}/>Rename</button>}{fileData.permissions.can_delete && <button className="flex w-full gap-2 px-3 py-2 text-red-600 hover:bg-red-50" onClick={() => deleteFile(file)}><Trash2 size={16}/>Delete</button>}</div>}</td></tr>)}</tbody></table>{fileData?.files.length === 0 && fileData?.folders.length === 0 && <p className="py-12 text-center text-slate-500">This folder is empty.</p>}</div>
       </>}</section>
     </main>{upload && <aside className="fixed bottom-5 right-5 z-20 w-80 rounded-lg bg-white p-4 shadow-xl ring-1 ring-slate-200"><div className="mb-2 flex items-start justify-between gap-3 text-sm"><div className="min-w-0"><p className="truncate">Uploading {upload.name}</p><p className="mt-1 text-slate-500">{upload.progress === null ? "Preparing upload…" : `${upload.progress}% complete`}</p></div><button onClick={() => upload.cancelSource.cancel("User cancelled upload")} className="shrink-0 text-red-600">Cancel</button></div><div className="h-2 overflow-hidden rounded bg-slate-200"><div className="h-full bg-sky-600" style={{width: `${upload.progress ?? 0}%`}}/></div></aside>}

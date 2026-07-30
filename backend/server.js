@@ -41,6 +41,12 @@ function storagePath(...segments) {
   return candidate;
 }
 
+function cleanRelativePath(value) {
+  const segments = String(value || "").split(/[\\/]+/).filter(Boolean);
+  if (!segments.length) throw new Error("File path must not be empty.");
+  return segments.map(segment => cleanName(segment, "File path"));
+}
+
 async function getDirectorySize(directory) {
   let total = 0;
   const entries = await fs.readdir(directory, { withFileTypes: true });
@@ -85,6 +91,14 @@ async function getFolder(folderId) {
   const result = await pool.query("SELECT * FROM shared_folders WHERE id = $1", [folderId]);
   if (!result.rowCount) throw new Error("Folder not found.");
   return result.rows[0];
+}
+
+function requireDownloadTicket(req, res, next) {
+  try {
+    const ticket = jwt.verify(String(req.query.ticket || ""), JWT_SECRET);
+    if (ticket.type !== "download" || Number(ticket.folderId) !== Number(req.params.folderId) || ticket.filename !== req.params.filename) throw new Error("Invalid download ticket.");
+    next();
+  } catch { res.status(401).json({ error: "Download link has expired. Please try again." }); }
 }
 
 async function getFolderDiskPath(folder) {
@@ -207,22 +221,39 @@ app.post("/api/folders/:folderId/upload", requireAuth, requireFolderPermission, 
   try {
     if (!req.file) throw new Error("Choose a file to upload.");
     const diskPath = await getFolderDiskPath(req.folder);
+    const relativePath = cleanRelativePath(req.body.relativePath || req.file.originalname);
+    const requestedFilename = relativePath.pop();
+    const targetDirectory = path.resolve(diskPath, ...relativePath);
+    if (!targetDirectory.startsWith(`${diskPath}${path.sep}`) && targetDirectory !== diskPath) throw new Error("Unsafe upload path.");
+    await fs.mkdir(targetDirectory, { recursive: true });
     const usedBytes = await getDirectorySize(diskPath);
     if (usedBytes + req.file.size > Number(req.folder.quota_limit_bytes)) {
       await fs.unlink(req.file.path);
       return res.status(413).json({ error: "Upload rejected: this folder quota would be exceeded." });
     }
-    const filename = await getUniqueFilename(diskPath, req.file.originalname);
-    await fs.rename(req.file.path, path.join(diskPath, filename));
-    res.status(201).json({ name: filename });
+    const filename = await getUniqueFilename(targetDirectory, requestedFilename);
+    await fs.rename(req.file.path, path.join(targetDirectory, filename));
+    res.status(201).json({ name: [...relativePath, filename].join("/") });
   } catch (error) {
     await fs.unlink(req.file?.path).catch(() => {});
     next(error);
   }
 });
 
-app.get("/api/folders/:folderId/files/:filename/download", requireAuth, requireFolderPermission, requireCapability("can_read"), async (req, res, next) => {
-  try { const name = cleanName(req.params.filename, "File name"); res.download(path.join(await getFolderDiskPath(req.folder), name), name); }
+app.post("/api/folders/:folderId/files/:filename/download-ticket", requireAuth, requireFolderPermission, requireCapability("can_read"), async (req, res, next) => {
+  try {
+    const name = cleanName(req.params.filename, "File name");
+    const ticket = jwt.sign({ type: "download", folderId: req.folder.id, filename: name }, JWT_SECRET, { expiresIn: "2m" });
+    res.json({ url: `/api/folders/${req.folder.id}/files/${encodeURIComponent(name)}/download?ticket=${encodeURIComponent(ticket)}` });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/folders/:folderId/files/:filename/download", requireDownloadTicket, async (req, res, next) => {
+  try {
+    const folder = await getFolder(req.params.folderId);
+    const name = cleanName(req.params.filename, "File name");
+    res.download(path.join(await getFolderDiskPath(folder), name), name);
+  }
   catch (error) { next(error); }
 });
 
