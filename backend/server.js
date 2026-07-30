@@ -330,8 +330,8 @@ app.post("/api/folders/:folderId/subfolders", requireAuth, requireFolderPermissi
 });
 app.delete("/api/folders/:folderId", requireAuth, requireFolderPermission, requireCapability("can_delete"), async (req, res, next) => {
   try {
-    // rmdir rejects non-empty folders, preventing accidental loss of nested files.
-    await fs.rmdir(await getFolderDiskPath(req.folder));
+    if (!req.folder.parent_id) return res.status(403).json({ error: "Only an administrator can delete a root folder." });
+    await fs.rm(await getFolderDiskPath(req.folder), { recursive: true, force: false });
     await pool.query("DELETE FROM shared_folders WHERE id = $1", [req.folder.id]);
     res.status(204).end();
   } catch (error) { next(error); }
@@ -374,8 +374,7 @@ app.patch("/api/admin/folders/:folderId", requireAuth, requireAdmin, async (req,
 app.delete("/api/admin/folders/:folderId", requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const folder = await getFolder(req.params.folderId);
-    // rmdir intentionally refuses a non-empty directory, so delete cannot remove files by accident.
-    await fs.rmdir(await getFolderDiskPath(folder));
+    await fs.rm(await getFolderDiskPath(folder), { recursive: true, force: false });
     await pool.query("DELETE FROM shared_folders WHERE id = $1", [folder.id]);
     res.status(204).end();
   } catch (error) { next(error); }
