@@ -1,5 +1,69 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-body { @apply bg-slate-100 text-slate-800; }
-button { @apply transition-colors; }
+
+@layer base {
+  html {
+    @apply bg-slate-100;
+  }
+
+  body {
+    @apply bg-slate-100 text-slate-800 antialiased transition-colors duration-200;
+  }
+
+  html.dark,
+  html.dark body {
+    @apply bg-slate-950 text-slate-100;
+  }
+
+  button,
+  label,
+  input {
+    @apply transition-colors;
+  }
+
+  button:focus-visible,
+  label:has(input[type="file"]:focus-visible) {
+    @apply outline-none ring-2 ring-sky-500 ring-offset-2 ring-offset-white;
+  }
+
+  .dark button:focus-visible,
+  .dark label:has(input[type="file"]:focus-visible) {
+    @apply ring-offset-slate-950;
+  }
+}
+
+@layer components {
+  .dark .admin-surface section.bg-white,
+  .dark .admin-surface form .bg-white {
+    border-color: #1e293b;
+    background-color: #0f172a;
+  }
+
+  .dark .admin-surface input,
+  .dark .admin-surface select {
+    border-color: #334155;
+    background-color: #020617;
+    color: #f1f5f9;
+  }
+
+  .dark .admin-surface .bg-slate-100 {
+    background-color: #1e293b;
+  }
+
+  .dark .admin-surface .hover\:bg-slate-100:hover,
+  .dark .admin-surface .hover\:bg-slate-200:hover {
+    background-color: #334155;
+  }
+
+  .dark .admin-surface .border-b,
+  .dark .admin-surface .border,
+  .dark .admin-surface .border-t {
+    border-color: #334155;
+  }
+
+  .dark .admin-surface .text-slate-500,
+  .dark .admin-surface .text-slate-400 {
+    color: #94a3b8;
+  }
+}

@@ -20,13 +20,18 @@ import {
   FileVideo,
   Folder,
   FolderPlus,
+  FolderUp,
   HardDrive,
+  LockKeyhole,
   LogOut,
   MoreVertical,
+  Moon,
   Package,
   Pencil,
   Plus,
   Shield,
+  ShieldCheck,
+  Sun,
   Trash2,
   Upload,
   Users,
@@ -114,15 +119,31 @@ function FileTypeIcon({ name, size = 18 }) {
 
 function Panel({ title, children, className = "" }) {
   return (
-    <section className={`rounded-xl bg-white p-5 shadow-sm ${className}`}>
+    <section
+      className={`rounded-xl bg-white p-5 shadow-sm dark:bg-slate-900 ${className}`}
+    >
       <h2 className="mb-4 text-lg font-semibold">{title}</h2>
       {children}
     </section>
   );
 }
 
-function Login({ onLogin }) {
-  const [username, setUsername] = useState("admin");
+function ThemeButton({ darkMode, toggleTheme, className = "" }) {
+  return (
+    <button
+      type="button"
+      onClick={toggleTheme}
+      title={darkMode ? "Use light mode" : "Use dark mode"}
+      aria-label={darkMode ? "Use light mode" : "Use dark mode"}
+      className={`grid h-9 w-9 place-items-center rounded-lg border border-slate-200 bg-white text-slate-600 shadow-sm hover:border-sky-300 hover:text-sky-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-sky-700 dark:hover:text-sky-300 ${className}`}
+    >
+      {darkMode ? <Sun size={17} /> : <Moon size={17} />}
+    </button>
+  );
+}
+
+function Login({ onLogin, darkMode, toggleTheme }) {
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   async function submit(event) {
@@ -136,39 +157,67 @@ function Login({ onLogin }) {
     }
   }
   return (
-    <main className="grid min-h-screen place-items-center p-5">
+    <main className="relative grid min-h-screen place-items-center overflow-hidden bg-slate-50 p-5 dark:bg-slate-950">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.12),transparent_38%),radial-gradient(circle_at_bottom_right,rgba(16,185,129,0.10),transparent_34%)]" />
+      <ThemeButton
+        darkMode={darkMode}
+        toggleTheme={toggleTheme}
+        className="absolute right-5 top-5 z-10"
+      />
       <form
         onSubmit={submit}
-        className="w-full max-w-sm rounded-2xl bg-white p-8 shadow-xl"
+        className="relative w-full max-w-sm rounded-2xl border border-slate-200/80 bg-white/95 p-8 shadow-xl shadow-slate-200/60 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95 dark:shadow-black/20"
       >
-        <div className="mb-7 flex items-center gap-3 text-sky-700">
-          <Cloud size={36} />
-          <span className="text-2xl font-bold">SkyNest</span>
+        <div className="mb-6 flex items-center gap-3 text-sky-700 dark:text-sky-400">
+          <span className="grid h-12 w-12 place-items-center rounded-xl bg-sky-50 text-sky-600 ring-1 ring-sky-100 dark:bg-sky-950 dark:text-sky-400 dark:ring-sky-900">
+            <Cloud size={28} />
+          </span>
+          <div>
+            <span className="block text-2xl font-bold tracking-tight">
+              SkyNest
+            </span>
+            <span className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+              <ShieldCheck size={13} />
+              Private and protected
+            </span>
+          </div>
         </div>
-        <p className="mb-5 text-sm text-slate-500">
-          Your private shared storage.
+        <h1 className="text-xl font-semibold text-slate-900 dark:text-white">
+          Welcome back
+        </h1>
+        <p className="mb-6 mt-1 text-sm text-slate-500 dark:text-slate-400">
+          Sign in to access your shared storage.
         </p>
-        <label className="block text-sm font-medium">
+        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
           Username
           <input
-            className="mt-1 w-full rounded border p-2"
+            className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 outline-none ring-sky-500 transition focus:border-sky-500 focus:ring-2 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+            placeholder="Enter your username"
             required
           />
         </label>
-        <label className="mt-4 block text-sm font-medium">
+        <label className="mt-4 block text-sm font-medium text-slate-700 dark:text-slate-300">
           Password
           <input
             type="password"
-            className="mt-1 w-full rounded border p-2"
+            className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 outline-none ring-sky-500 transition focus:border-sky-500 focus:ring-2 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            placeholder="Enter your password"
             required
           />
         </label>
-        {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
-        <button className="mt-6 w-full rounded bg-sky-600 py-2 font-medium text-white hover:bg-sky-700">
+        {error && (
+          <p className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300">
+            {error}
+          </p>
+        )}
+        <button className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-sky-600 py-2.5 font-medium text-white shadow-sm shadow-sky-200 hover:bg-sky-700 dark:shadow-none">
+          <LockKeyhole size={17} />
           Sign in
         </button>
       </form>
@@ -176,7 +225,7 @@ function Login({ onLogin }) {
   );
 }
 
-function Drive({ token, user, openAdmin }) {
+function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
   const [folders, setFolders] = useState([]),
     [active, setActive] = useState(null),
     [fileData, setFileData] = useState(null);
@@ -742,7 +791,7 @@ function Drive({ token, user, openAdmin }) {
     ? Math.min(100, (fileData.usedBytes / fileData.quotaLimitBytes) * 100 || 0)
     : 0;
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen bg-slate-100 text-slate-800 dark:bg-slate-950 dark:text-slate-100">
       {(menu || folderMenu) && (
         <button
           aria-label="Close menu"
@@ -753,20 +802,26 @@ function Drive({ token, user, openAdmin }) {
           className="fixed inset-0 z-10 cursor-default"
         />
       )}
-      <header className="flex items-center justify-between bg-white px-5 py-3 shadow-sm">
+      <header className="sticky top-0 z-30 flex items-center justify-between border-b border-slate-200 bg-white/95 px-5 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
         <button
           onClick={goHome}
-          className="flex items-center gap-2 font-bold text-sky-700"
+          className="flex items-center gap-2 font-bold text-sky-700 dark:text-sky-400"
           title="Back to main page"
         >
-          <Cloud /> SkyNest
+          <span className="grid h-8 w-8 place-items-center rounded-lg bg-sky-50 dark:bg-sky-950">
+            <Cloud size={19} />
+          </span>
+          SkyNest
         </button>
         <div className="flex items-center gap-3 text-sm">
-          <span>{user.username}</span>
+          <span className="hidden text-slate-600 dark:text-slate-300 sm:inline">
+            {user.username}
+          </span>
+          <ThemeButton darkMode={darkMode} toggleTheme={toggleTheme} />
           {user.isAdmin && (
             <button
               onClick={openAdmin}
-              className="rounded bg-slate-100 p-2 hover:bg-slate-200"
+              className="grid h-9 w-9 place-items-center rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-sky-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-sky-300"
               title="Administration"
             >
               <Shield size={18} />
@@ -777,143 +832,201 @@ function Drive({ token, user, openAdmin }) {
               localStorage.removeItem("skynest");
               location.reload();
             }}
+            className="grid h-9 w-9 place-items-center rounded-lg text-slate-500 hover:bg-red-50 hover:text-red-600 dark:text-slate-400 dark:hover:bg-red-950 dark:hover:text-red-300"
             title="Sign out"
           >
             <LogOut size={19} />
           </button>
         </div>
       </header>
-      <main className="grid min-h-[calc(100vh-65px)] w-full gap-5 p-5 lg:grid-cols-[240px_minmax(0,1fr)]">
-        <aside className="min-h-[calc(100vh-105px)] rounded-xl bg-white p-4 shadow-sm">
-          <h2 className="mb-3 font-semibold">Shared folders</h2>
+      <main className="grid min-h-[calc(100vh-65px)] w-full gap-4 p-3 sm:gap-5 sm:p-5 lg:grid-cols-[240px_minmax(0,1fr)]">
+        <aside className="min-h-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 lg:min-h-[calc(100vh-105px)]">
+          <h2 className="mb-1 font-semibold">Shared folders</h2>
+          <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+            Storage available to your account
+          </p>
           {folders.map((folder) => (
             <button
               key={folder.id}
               onClick={() => selectFolder(folder, [folder])}
-              className={`mb-1 flex w-full items-center gap-2 rounded p-2 text-left ${active?.id === folder.id ? "bg-sky-100 text-sky-800" : "hover:bg-slate-100"}`}
+              className={`mb-1 flex w-full items-center gap-2 rounded-lg p-2.5 text-left ${
+                active?.id === folder.id
+                  ? "bg-sky-50 text-sky-800 ring-1 ring-sky-100 dark:bg-sky-950 dark:text-sky-300 dark:ring-sky-900"
+                  : "hover:bg-slate-50 dark:hover:bg-slate-800"
+              }`}
             >
               <Folder size={18} />
-              {folder.folder_name}
+              <span className="truncate">{folder.folder_name}</span>
             </button>
           ))}
           {!folders.length && (
-            <p className="text-sm text-slate-500">
+            <p className="text-sm text-slate-500 dark:text-slate-400">
               No folders are assigned to you.
             </p>
           )}
           {active && fileData && (
-            <div className="mt-6 border-t pt-4 text-sm">
+            <div className="mt-6 border-t border-slate-200 pt-4 text-sm dark:border-slate-800">
               <p className="font-medium">
                 Root quota: {fileData.quotaFolderName || trail[0]?.folder_name}
               </p>
-              <p className="mt-1 text-slate-500">
+              <p className="mt-1 text-slate-500 dark:text-slate-400">
                 {bytes(fileData.usedBytes)} of {bytes(fileData.quotaLimitBytes)}{" "}
                 used
               </p>
-              <div className="mt-2 h-2 overflow-hidden rounded bg-slate-200">
+              <div className="mt-2 h-2 overflow-hidden rounded bg-slate-200 dark:bg-slate-800">
                 <div
-                  className="h-full bg-sky-600"
+                  className="h-full bg-gradient-to-r from-sky-500 to-emerald-500"
                   style={{ width: `${percentage}%` }}
                 />
               </div>
+              <p className="mt-2 flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+                <ShieldCheck size={13} />
+                Protected storage
+              </p>
             </div>
           )}
         </aside>
-        <section className="min-w-0 min-h-[calc(100vh-105px)] rounded-xl bg-white p-5 shadow-sm">
+        <section className="min-h-0 min-w-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-5 lg:min-h-[calc(100vh-105px)]">
           {!active ? (
-            <div className="grid min-h-80 place-items-center text-slate-500">
+            <div className="grid min-h-80 place-items-center text-slate-500 dark:text-slate-400">
               <div className="text-center">
-                <Folder className="mx-auto mb-3" size={42} />
-                <p>Select a shared folder.</p>
+                <span className="mx-auto mb-3 grid h-16 w-16 place-items-center rounded-2xl bg-sky-50 text-sky-600 dark:bg-sky-950 dark:text-sky-400">
+                  <Folder size={34} />
+                </span>
+                <p className="font-medium text-slate-700 dark:text-slate-200">
+                  Select a shared folder
+                </p>
+                <p className="mt-1 text-sm">
+                  Choose a folder from the sidebar to view its contents.
+                </p>
               </div>
             </div>
           ) : (
             <>
               <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <div className="mb-1 flex flex-wrap items-center gap-1 text-sm text-slate-500">
+                  <div className="mb-1 flex flex-wrap items-center gap-1 text-sm text-slate-500 dark:text-slate-400">
                     {trail.map((folder, index) => (
                       <button
                         key={folder.id}
                         onClick={() =>
                           selectFolder(folder, trail.slice(0, index + 1))
                         }
-                        className="flex items-center hover:text-sky-700"
+                        className="flex items-center hover:text-sky-700 dark:hover:text-sky-300"
                       >
                         {index > 0 && <ChevronRight size={15} />}{" "}
                         {folder.folder_name}
                       </button>
                     ))}
                   </div>
-                  <h1 className="text-xl font-bold">{active.folder_name}</h1>
-                  <p className="text-sm text-slate-500">
-                    {fileData && `${fileData.files.length} file(s)`}
+                  <h1 className="text-xl font-bold tracking-tight">
+                    {active.folder_name}
+                  </h1>
+                  <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
+                    {fileData &&
+                      `${fileData.folders.length} ${
+                        fileData.folders.length === 1 ? "folder" : "folders"
+                      } · ${fileData.files.length} ${
+                        fileData.files.length === 1 ? "file" : "files"
+                      }`}
                   </p>
                 </div>
                 {fileData?.permissions.can_write && (
-                  <div className="flex gap-2">
-                    <button
-                      onClick={createSubfolder}
-                      className="flex items-center gap-2 rounded bg-slate-100 px-3 py-2 text-sm font-medium hover:bg-slate-200"
-                    >
-                      <FolderPlus size={17} />
-                      New folder
-                    </button>
-                    <label className="flex cursor-pointer items-center gap-2 rounded bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-700">
-                      <Upload size={17} /> Upload
-                      <input
-                        className="hidden"
-                        type="file"
-                        onChange={uploadFile}
-                      />
-                    </label>
-                  </div>
+                  <button
+                    onClick={createSubfolder}
+                    className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium shadow-sm hover:border-sky-300 hover:bg-sky-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-sky-700 dark:hover:bg-sky-950"
+                  >
+                    <FolderPlus size={17} className="text-sky-600" />
+                    New folder
+                  </button>
                 )}
               </div>
               {message && (
                 <p
                   className={`mb-3 rounded border p-3 text-sm ${
                     message.type === "success"
-                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-300"
                       : message.type === "error"
-                        ? "border-red-200 bg-red-50 text-red-700"
-                        : "border-sky-200 bg-sky-50 text-sky-700"
+                        ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300"
+                        : "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950/50 dark:text-sky-300"
                   }`}
                 >
                   {message.text}
                 </p>
               )}
-              <button
-                onClick={downloadFolder}
-                className="mb-4 mr-2 rounded bg-slate-100 px-3 py-2 text-sm font-medium hover:bg-slate-200"
-              >
-                Download folder
-              </button>
-              {fileData?.permissions.can_write && (
-                <label className="mb-4 inline-flex cursor-pointer items-center gap-2 rounded bg-slate-100 px-3 py-2 text-sm font-medium hover:bg-slate-200">
-                  <FolderPlus size={17} />
-                  Upload folder
-                  <input
-                    className="hidden"
-                    type="file"
-                    webkitdirectory=""
-                    directory=""
-                    multiple
-                    onChange={uploadFile}
-                  />
-                </label>
-              )}
+              <div className="mb-5 flex flex-wrap items-stretch gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2 dark:border-slate-800 dark:bg-slate-950/50">
+                <button
+                  onClick={downloadFolder}
+                  className="flex min-w-[170px] flex-1 items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-white hover:shadow-sm dark:hover:bg-slate-800"
+                >
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                    <Download size={18} />
+                  </span>
+                  <span>
+                    <span className="block text-sm font-medium">
+                      Download folder
+                    </span>
+                    <span className="block text-xs text-slate-500 dark:text-slate-400">
+                      Save everything as ZIP
+                    </span>
+                  </span>
+                </button>
+                {fileData?.permissions.can_write && (
+                  <>
+                    <label className="flex min-w-[170px] flex-1 cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-white hover:shadow-sm dark:hover:bg-slate-800">
+                      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300">
+                        <Upload size={18} />
+                      </span>
+                      <span>
+                        <span className="block text-sm font-medium">
+                          Upload files
+                        </span>
+                        <span className="block text-xs text-slate-500 dark:text-slate-400">
+                          Select one or more files
+                        </span>
+                      </span>
+                      <input
+                        className="hidden"
+                        type="file"
+                        multiple
+                        onChange={uploadFile}
+                      />
+                    </label>
+                    <label className="flex min-w-[170px] flex-1 cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-white hover:shadow-sm dark:hover:bg-slate-800">
+                      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+                        <FolderUp size={18} />
+                      </span>
+                      <span>
+                        <span className="block text-sm font-medium">
+                          Upload folder
+                        </span>
+                        <span className="block text-xs text-slate-500 dark:text-slate-400">
+                          Keep its folder structure
+                        </span>
+                      </span>
+                      <input
+                        className="hidden"
+                        type="file"
+                        webkitdirectory=""
+                        directory=""
+                        multiple
+                        onChange={uploadFile}
+                      />
+                    </label>
+                  </>
+                )}
+              </div>
               <div className="mb-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {fileData?.folders.map((folder) => (
                   <div
                     key={folder.id}
-                    className="relative flex items-center rounded-lg border hover:bg-sky-50"
+                    className="relative flex items-center rounded-lg border border-slate-200 hover:border-sky-200 hover:bg-sky-50 dark:border-slate-700 dark:hover:border-sky-800 dark:hover:bg-sky-950"
                   >
                     <button
                       onClick={() => selectFolder(folder, [...trail, folder])}
                       className="flex min-w-0 flex-1 items-center gap-3 p-3 text-left"
                     >
-                      <Folder className="shrink-0 text-sky-600" />
+                      <Folder className="shrink-0 text-sky-600 dark:text-sky-400" />
                       <span className="truncate font-medium">
                         {folder.folder_name}
                       </span>
@@ -924,18 +1037,18 @@ function Drive({ token, user, openAdmin }) {
                           folderMenu === folder.id ? null : folder.id,
                         )
                       }
-                      className="mr-2 rounded p-2 hover:bg-slate-200"
+                      className="mr-2 rounded p-2 hover:bg-slate-200 dark:hover:bg-slate-700"
                       title="Folder actions"
                     >
                       <MoreVertical size={18} />
                     </button>
                     {folderMenu === folder.id && (
-                      <div className="absolute right-2 top-11 z-20 w-48 rounded border bg-white py-1 shadow-lg">
+                      <div className="absolute right-2 top-11 z-20 w-48 rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-700 dark:bg-slate-800">
                         <button
                           onClick={() =>
                             selectFolder(folder, [...trail, folder])
                           }
-                          className="flex w-full gap-2 px-3 py-2 text-left hover:bg-slate-100"
+                          className="flex w-full gap-2 px-3 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-700"
                         >
                           <Folder size={16} />
                           Open
@@ -943,7 +1056,7 @@ function Drive({ token, user, openAdmin }) {
                         {(user.isAdmin || folder.can_write) && (
                           <button
                             onClick={() => renameFolder(folder)}
-                            className="flex w-full gap-2 px-3 py-2 text-left hover:bg-slate-100"
+                            className="flex w-full gap-2 px-3 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-700"
                           >
                             <Pencil size={16} />
                             Rename
@@ -953,7 +1066,7 @@ function Drive({ token, user, openAdmin }) {
                           <>
                             <button
                               onClick={openAdmin}
-                              className="flex w-full gap-2 px-3 py-2 text-left hover:bg-slate-100"
+                              className="flex w-full gap-2 px-3 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-700"
                             >
                               <Users size={16} />
                               Manage access
@@ -963,7 +1076,7 @@ function Drive({ token, user, openAdmin }) {
                         {(user.isAdmin || folder.can_delete) && (
                           <button
                             onClick={() => deleteFolder(folder)}
-                            className="flex w-full gap-2 px-3 py-2 text-left text-red-600 hover:bg-red-50"
+                            className="flex w-full gap-2 px-3 py-2 text-left text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
                           >
                             <Trash2 size={16} />
                             Delete
@@ -974,9 +1087,9 @@ function Drive({ token, user, openAdmin }) {
                   </div>
                 ))}
               </div>
-              <div className="overflow-visible">
-                <table className="w-full text-left text-sm">
-                  <thead className="border-b text-slate-500">
+              <div className="overflow-x-auto overflow-y-visible">
+                <table className="w-full min-w-[620px] text-left text-sm">
+                  <thead className="border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
                     <tr>
                       <th className="p-3">Name</th>
                       <th className="p-3">Size</th>
@@ -988,7 +1101,7 @@ function Drive({ token, user, openAdmin }) {
                     {fileData?.files.map((file) => (
                       <tr
                         key={file.name}
-                        className="border-b hover:bg-slate-50"
+                        className="border-b border-slate-200 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/60"
                       >
                         <td className="p-3 font-medium">
                           <span className="flex items-center gap-2">
@@ -1009,9 +1122,9 @@ function Drive({ token, user, openAdmin }) {
                             <MoreVertical size={18} />
                           </button>
                           {menu === file.name && (
-                            <div className="absolute right-3 z-30 mt-1 w-40 rounded border bg-white py-1 shadow-lg">
+                            <div className="absolute right-3 z-30 mt-1 w-40 rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-700 dark:bg-slate-800">
                               <button
-                                className="flex w-full gap-2 px-3 py-2 hover:bg-slate-100"
+                                className="flex w-full gap-2 px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-700"
                                 onClick={() => downloadFile(file)}
                               >
                                 <Download size={16} />
@@ -1019,7 +1132,7 @@ function Drive({ token, user, openAdmin }) {
                               </button>
                               {fileData.permissions.can_write && (
                                 <button
-                                  className="flex w-full gap-2 px-3 py-2 hover:bg-slate-100"
+                                  className="flex w-full gap-2 px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-700"
                                   onClick={() => renameFile(file)}
                                 >
                                   <Pencil size={16} />
@@ -1028,7 +1141,7 @@ function Drive({ token, user, openAdmin }) {
                               )}
                               {fileData.permissions.can_delete && (
                                 <button
-                                  className="flex w-full gap-2 px-3 py-2 text-red-600 hover:bg-red-50"
+                                  className="flex w-full gap-2 px-3 py-2 text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
                                   onClick={() => deleteFile(file)}
                                 >
                                   <Trash2 size={16} />
@@ -1044,7 +1157,7 @@ function Drive({ token, user, openAdmin }) {
                 </table>
                 {fileData?.files.length === 0 &&
                   fileData?.folders.length === 0 && (
-                    <p className="py-12 text-center text-slate-500">
+                    <p className="py-12 text-center text-slate-500 dark:text-slate-400">
                       This folder is empty.
                     </p>
                   )}
@@ -1054,11 +1167,11 @@ function Drive({ token, user, openAdmin }) {
         </section>
       </main>
       {uploads.length > 0 && (
-        <aside className="fixed bottom-5 right-5 z-[60] w-96 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl bg-white shadow-2xl ring-1 ring-slate-200">
-          <div className="flex items-center justify-between border-b px-4 py-3">
+        <aside className="fixed bottom-5 right-5 z-[60] w-96 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl bg-white shadow-2xl ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
+          <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-700">
             <div>
               <p className="font-semibold">Uploads</p>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
                 {uploads.filter((item) =>
                   ["queued", "uploading", "retrying"].includes(item.status),
                 ).length}{" "}
@@ -1074,7 +1187,10 @@ function Drive({ token, user, openAdmin }) {
           </div>
           <div className="max-h-80 overflow-y-auto">
             {uploads.map((item) => (
-              <div key={item.id} className="border-b px-4 py-3 last:border-0">
+              <div
+                key={item.id}
+                className="border-b border-slate-200 px-4 py-3 last:border-0 dark:border-slate-800"
+              >
                 <div className="flex items-start justify-between gap-3 text-sm">
                   <div className="min-w-0 flex-1">
                     <p className="truncate font-medium">{item.name}</p>
@@ -1084,7 +1200,7 @@ function Drive({ token, user, openAdmin }) {
                           ? "text-red-600"
                           : item.status === "completed"
                             ? "text-emerald-600"
-                            : "text-slate-500"
+                            : "text-slate-500 dark:text-slate-400"
                       }`}
                     >
                       {item.status === "queued" && "Waiting in queue"}
@@ -1117,7 +1233,7 @@ function Drive({ token, user, openAdmin }) {
                       </button>
                       <button
                         onClick={() => dismissUpload(item)}
-                        className="text-slate-400 hover:text-slate-700"
+                      className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
                         aria-label="Dismiss upload"
                       >
                         <X size={16} />
@@ -1126,14 +1242,14 @@ function Drive({ token, user, openAdmin }) {
                   ) : (
                     <button
                       onClick={() => dismissUpload(item)}
-                      className="shrink-0 text-slate-400 hover:text-slate-700"
+                      className="shrink-0 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
                       aria-label="Dismiss upload"
                     >
                       <X size={16} />
                     </button>
                   )}
                 </div>
-                <div className="mt-2 h-1.5 overflow-hidden rounded bg-slate-200">
+                <div className="mt-2 h-1.5 overflow-hidden rounded bg-slate-200 dark:bg-slate-800">
                   <div
                     className={`h-full transition-[width] ${
                       item.status === "failed"
@@ -1154,7 +1270,13 @@ function Drive({ token, user, openAdmin }) {
   );
 }
 
-function Admin({ token, currentUser, onClose }) {
+function Admin({
+  token,
+  currentUser,
+  onClose,
+  darkMode,
+  toggleTheme,
+}) {
   const headers = useMemo(
     () => ({ Authorization: `Bearer ${token}` }),
     [token],
@@ -1458,14 +1580,20 @@ function Admin({ token, currentUser, onClose }) {
     onClose();
   }
   return (
-    <main className="w-full p-5">
+    <main className="admin-surface w-full p-5">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="flex items-center gap-2 text-2xl font-bold">
           <Shield /> Administration
         </h1>
-        <button onClick={closeAdmin} className="rounded p-2 hover:bg-slate-200">
-          <X />
-        </button>
+        <div className="flex items-center gap-2">
+          <ThemeButton darkMode={darkMode} toggleTheme={toggleTheme} />
+          <button
+            onClick={closeAdmin}
+            className="grid h-9 w-9 place-items-center rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800"
+          >
+            <X size={20} />
+          </button>
+        </div>
       </div>
       {message && (
         <p
@@ -1857,24 +1985,47 @@ export default function App() {
     JSON.parse(localStorage.getItem("skynest") || "null"),
   );
   const [admin, setAdmin] = useState(false);
+  const [darkMode, setDarkMode] = useState(
+    () =>
+      localStorage.getItem("skynest:theme") === "dark" ||
+      (!localStorage.getItem("skynest:theme") &&
+        window.matchMedia?.("(prefers-color-scheme: dark)").matches),
+  );
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", darkMode);
+    document.documentElement.style.colorScheme = darkMode ? "dark" : "light";
+    localStorage.setItem("skynest:theme", darkMode ? "dark" : "light");
+  }, [darkMode]);
+  const toggleTheme = () => setDarkMode((current) => !current);
   function login(data) {
     localStorage.setItem("skynest", JSON.stringify(data));
     setSession(data);
   }
-  if (!session) return <Login onLogin={login} />;
+  if (!session)
+    return (
+      <Login
+        onLogin={login}
+        darkMode={darkMode}
+        toggleTheme={toggleTheme}
+      />
+    );
   return (
     <>
       <Drive
         token={session.token}
         user={session.user}
         openAdmin={() => setAdmin(true)}
+        darkMode={darkMode}
+        toggleTheme={toggleTheme}
       />
       {admin && (
-        <div className="fixed inset-0 z-40 overflow-y-auto bg-slate-100">
+        <div className="fixed inset-0 z-40 overflow-y-auto bg-slate-100 dark:bg-slate-950 dark:text-slate-100">
           <Admin
             token={session.token}
             currentUser={session.user}
             onClose={() => setAdmin(false)}
+            darkMode={darkMode}
+            toggleTheme={toggleTheme}
           />
         </div>
       )}
