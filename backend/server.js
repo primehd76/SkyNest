@@ -6,6 +6,7 @@ import jwt from "jsonwebtoken";
 import pg from "pg";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import archiver from "archiver";
 
 const { Pool } = pg;
 const app = express();
@@ -96,7 +97,9 @@ async function getFolder(folderId) {
 function requireDownloadTicket(req, res, next) {
   try {
     const ticket = jwt.verify(String(req.query.ticket || ""), JWT_SECRET);
-    if (ticket.type !== "download" || Number(ticket.folderId) !== Number(req.params.folderId) || ticket.filename !== req.params.filename) throw new Error("Invalid download ticket.");
+    const isFile = ticket.type === "download" && ticket.filename === req.params.filename;
+    const isFolder = ticket.type === "folder-download" && !req.params.filename;
+    if ((!isFile && !isFolder) || Number(ticket.folderId) !== Number(req.params.folderId)) throw new Error("Invalid download ticket.");
     next();
   } catch { res.status(401).json({ error: "Download link has expired. Please try again." }); }
 }
@@ -282,6 +285,23 @@ app.get("/api/folders/:folderId/files/:filename/download", requireDownloadTicket
     res.download(path.join(await getFolderDiskPath(folder), name), name);
   }
   catch (error) { next(error); }
+});
+app.post("/api/folders/:folderId/download-ticket", requireAuth, requireFolderPermission, requireCapability("can_read"), async (req, res, next) => {
+  try {
+    const ticket = jwt.sign({ type: "folder-download", folderId: req.folder.id }, JWT_SECRET, { expiresIn: "2m" });
+    res.json({ url: `/api/folders/${req.folder.id}/download?ticket=${encodeURIComponent(ticket)}` });
+  } catch (error) { next(error); }
+});
+app.get("/api/folders/:folderId/download", requireDownloadTicket, async (req, res, next) => {
+  try {
+    const folder = await getFolder(req.params.folderId);
+    res.attachment(`${folder.folder_name}.zip`);
+    const archive = archiver("zip", { zlib: { level: 6 } });
+    archive.on("error", next);
+    archive.pipe(res);
+    archive.directory(await getFolderDiskPath(folder), folder.folder_name);
+    await archive.finalize();
+  } catch (error) { next(error); }
 });
 
 app.patch("/api/folders/:folderId/files/:filename", requireAuth, requireFolderPermission, requireCapability("can_write"), async (req, res, next) => {
