@@ -219,7 +219,11 @@ app.put("/api/admin/folders/:folderId/permissions/:userId", requireAuth, require
   } catch (error) { next(error); }
 });
 
-app.use((error, _req, res, _next) => { console.error(error); res.status(500).json({ error: error.message || "Unexpected server error." }); });
+app.use((error, _req, res, _next) => {
+  console.error(error);
+  if (error.code === "23505") return res.status(409).json({ error: "That name already exists." });
+  res.status(500).json({ error: error.message || "Unexpected server error." });
+});
 
 await fs.mkdir(STORAGE_ROOT, { recursive: true });
 await createInitialAdmin();

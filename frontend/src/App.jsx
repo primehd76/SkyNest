@@ -101,8 +101,26 @@ function Admin({ token, onClose }) {
   const load = useCallback(async () => { const [u, f, d] = await Promise.all([api.get("/admin/users", {headers}), api.get("/folders", {headers}), api.get("/admin/disk", {headers})]); setUsers(u.data); setFolders(f.data); setDisk(d.data); }, [headers]);
   useEffect(() => { load().catch(e => setMessage(e.response?.data?.error || e.message)); }, [load]);
   async function selectFolder(folder) { setSelected(folder); setPermissions((await api.get(`/admin/folders/${folder.id}/permissions`, {headers})).data); }
-  async function createUser(event) { event.preventDefault(); const form = new FormData(event.currentTarget); try { await api.post("/admin/users", { username: form.get("username"), password: form.get("password"), isAdmin: form.get("isAdmin") === "on" }, {headers}); event.currentTarget.reset(); await load(); } catch(e) { setMessage(e.response?.data?.error || e.message); } }
-  async function createFolder(event) { event.preventDefault(); const form = new FormData(event.currentTarget); try { await api.post("/admin/folders", { folderName: form.get("name"), quotaLimitBytes: Number(form.get("quotaGb")) * 1024 ** 3 }, {headers}); event.currentTarget.reset(); await load(); } catch(e) { setMessage(e.response?.data?.error || e.message); } }
+  async function createUser(event) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    try {
+      await api.post("/admin/users", { username: form.get("username"), password: form.get("password"), isAdmin: form.get("isAdmin") === "on" }, {headers});
+      formElement.reset();
+      await load();
+    } catch (e) { setMessage(e.response?.data?.error || e.message); }
+  }
+  async function createFolder(event) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    try {
+      await api.post("/admin/folders", { folderName: form.get("name"), quotaLimitBytes: Number(form.get("quotaGb")) * 1024 ** 3 }, {headers});
+      formElement.reset();
+      await load();
+    } catch (e) { setMessage(e.response?.data?.error || e.message); }
+  }
   const permissionFor = user => permissions.find(p => p.user_id === user.id) || { can_read: false, can_write: false, can_delete: false };
   async function savePermission(user, field, checked) {
     const current = permissionFor(user); const next = { canRead: current.can_read, canWrite: current.can_write, canDelete: current.can_delete };
