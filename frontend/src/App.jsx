@@ -879,7 +879,7 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
           <SystemMonitor metrics={homeMetrics} metricsError={homeMetricsError} />
         </div>
       )}
-      <main className="grid min-h-[calc(100vh-65px)] w-full gap-4 p-3 sm:gap-5 sm:p-5 lg:grid-cols-[240px_minmax(0,1fr)]">
+      <main className="grid min-h-0 w-full gap-4 p-3 sm:gap-5 sm:p-5 lg:min-h-[calc(100vh-65px)] lg:grid-cols-[240px_minmax(0,1fr)]">
         <aside className="min-h-0 self-start rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <h2 className="mb-1 font-semibold">Shared folders</h2>
           <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
