@@ -50,9 +50,9 @@ const UPLOAD_STORE_NAME = "queue";
 function BrandLockup({ compact = false }) {
   return (
     <span className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap">
-      <img src="/skynest-logo.png" alt="SkyNest" className={compact ? "h-8 w-auto max-w-[118px] object-contain" : "h-16 w-auto max-w-[220px] object-contain"} />
+      <img src="/skynest-logo.png" alt="SkyNest" className={compact ? "h-8 w-auto max-w-[118px] object-contain" : "h-28 w-auto max-w-[400px] object-contain"} />
       <span className="inline-flex items-center gap-1.5 border-l border-slate-200 pl-2 text-[10px] font-medium text-slate-400 dark:border-slate-700 dark:text-slate-500">
-        Powered by <img src="/itbro7-logo.png" alt="ITBRO7" className={compact ? "h-6 w-auto max-w-[58px] object-contain" : "h-10 w-auto max-w-[100px] object-contain"} />
+        Powered by <img src="/itbro7-logo.png" alt="ITBRO7" className={compact ? "h-6 w-auto max-w-[58px] object-contain" : "h-14 w-auto max-w-[140px] object-contain"} />
       </span>
     </span>
   );
@@ -185,7 +185,7 @@ function Login({ onLogin, darkMode, toggleTheme }) {
         toggleTheme={toggleTheme}
         className="absolute right-5 top-5 z-10"
       />
-      <div className="absolute left-1/2 top-10 -translate-x-1/2 scale-110">
+      <div className="absolute left-1/2 top-8 -translate-x-1/2">
         <BrandLockup />
       </div>
       <form
@@ -1325,7 +1325,7 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
 
 function SystemMonitor({ metrics, metricsError }) {
   return (
-    <Panel title="System monitor" className="mt-5">
+    <Panel title="System monitor" className="mt-5 mb-5">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
         <span className="flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${metrics ? "animate-pulse bg-emerald-500" : "bg-slate-400"}`} />{metrics ? "Live / container stats every 3s / host health every 5m" : metricsError || "Connecting to metrics..."}</span>
         {metrics?.timestamp && <span>Updated {new Date(metrics.timestamp).toLocaleTimeString()}</span>}
@@ -2134,32 +2134,30 @@ export default function App() {
         toggleTheme={toggleTheme}
       />
     );
-  return (
-    <>
-      <Drive
+  const closeAdmin = () => {
+    localStorage.removeItem("skynest:admin");
+    setAdmin(false);
+  };
+  if (admin)
+    return (
+      <Admin
         token={session.token}
-        user={session.user}
-        openAdmin={() => {
-          localStorage.setItem("skynest:admin", "1");
-          setAdmin(true);
-        }}
+        currentUser={session.user}
+        onClose={closeAdmin}
         darkMode={darkMode}
         toggleTheme={toggleTheme}
       />
-      {admin && (
-        <div className="fixed inset-0 z-40 overflow-y-auto bg-slate-100 dark:bg-slate-950 dark:text-slate-100">
-          <Admin
-            token={session.token}
-            currentUser={session.user}
-            onClose={() => {
-              localStorage.removeItem("skynest:admin");
-              setAdmin(false);
-            }}
-            darkMode={darkMode}
-            toggleTheme={toggleTheme}
-          />
-        </div>
-      )}
-    </>
+    );
+  return (
+    <Drive
+      token={session.token}
+      user={session.user}
+      openAdmin={() => {
+        localStorage.setItem("skynest:admin", "1");
+        setAdmin(true);
+      }}
+      darkMode={darkMode}
+      toggleTheme={toggleTheme}
+    />
   );
 }
