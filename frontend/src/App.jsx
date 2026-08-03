@@ -244,6 +244,7 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
     [menu, setMenu] = useState(null),
     [folderMenu, setFolderMenu] = useState(null),
     [trail, setTrail] = useState([]);
+  const [showAllFolders, setShowAllFolders] = useState(false);
   const [homeMetrics, setHomeMetrics] = useState(null);
   const [homeMetricsError, setHomeMetricsError] = useState("");
   const activeRef = useRef(null);
@@ -879,12 +880,12 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
         </div>
       )}
       <main className="grid min-h-[calc(100vh-65px)] w-full gap-4 p-3 sm:gap-5 sm:p-5 lg:grid-cols-[240px_minmax(0,1fr)]">
-        <aside className="min-h-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 lg:min-h-[calc(100vh-105px)]">
+        <aside className="min-h-0 self-start rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <h2 className="mb-1 font-semibold">Shared folders</h2>
           <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
             Storage available to your account
           </p>
-          {folders.map((folder) => (
+          {folders.slice(0, showAllFolders ? folders.length : 3).map((folder) => (
             <button
               key={folder.id}
               onClick={() => selectFolder(folder, [folder])}
@@ -898,6 +899,15 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
               <span className="truncate">{folder.folder_name}</span>
             </button>
           ))}
+          {folders.length > 3 && (
+            <button
+              type="button"
+              onClick={() => setShowAllFolders((current) => !current)}
+              className="mt-2 w-full rounded-lg px-2.5 py-2 text-left text-xs font-medium text-sky-700 hover:bg-sky-50 dark:text-sky-300 dark:hover:bg-sky-950/40"
+            >
+              {showAllFolders ? "Show fewer folders" : `Show all ${folders.length} folders`}
+            </button>
+          )}
           {!folders.length && (
             <p className="text-sm text-slate-500 dark:text-slate-400">
               No folders are assigned to you.
