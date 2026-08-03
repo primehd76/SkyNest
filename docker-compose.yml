@@ -3,8 +3,8 @@ version: "3.8"
 services:
   database:
     image: postgres:16-alpine
-    cpus: 3.0
-    mem_limit: 7g
+    cpus: 2.0
+    mem_limit: 4g
     environment:
       POSTGRES_DB: skynest
       POSTGRES_USER: skynest
@@ -23,8 +23,8 @@ services:
         ipv4_address: 172.16.72.163
   backend:
     build: ./backend
-    cpus: 12.0
-    mem_limit: 24g
+    cpus: 8.0
+    mem_limit: 10g
     environment:
       PORT: 4000
       PGHOST: database
@@ -44,7 +44,6 @@ services:
       CORS_ORIGIN: http://localhost:8080
     volumes:
       - /media/DATA2TB/SkyNest:/app/storage
-      - /sys/fs/cgroup:/sys/fs/cgroup:ro
       - /sys/class/thermal:/sys/class/thermal:ro
     devices:
       - /dev/sda:/dev/sda
@@ -56,8 +55,8 @@ services:
         ipv4_address: 172.16.72.162
   frontend:
     build: ./frontend
-    cpus: 1.0
-    mem_limit: 1g
+    cpus: 2.0
+    mem_limit: 2g
     ports:
       - "8080:8080"
     depends_on:
