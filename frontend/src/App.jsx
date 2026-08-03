@@ -186,19 +186,13 @@ function Login({ onLogin, darkMode, toggleTheme }) {
         toggleTheme={toggleTheme}
         className="absolute right-5 top-5 z-10"
       />
+      <div className="absolute left-1/2 top-10 -translate-x-1/2 scale-110">
+        <BrandLockup />
+      </div>
       <form
         onSubmit={submit}
         className="relative w-full max-w-sm rounded-2xl border border-slate-200/80 bg-white/95 p-8 shadow-xl shadow-slate-200/60 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95 dark:shadow-black/20"
       >
-        <div className="mb-6 flex items-center gap-3 text-sky-700 dark:text-sky-400">
-          <BrandLockup />
-          <div>
-            <span className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
-              <ShieldCheck size={13} />
-              Private and protected
-            </span>
-          </div>
-        </div>
         <h1 className="text-xl font-semibold text-slate-900 dark:text-white">
           Welcome back
         </h1>
@@ -251,6 +245,8 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
     [menu, setMenu] = useState(null),
     [folderMenu, setFolderMenu] = useState(null),
     [trail, setTrail] = useState([]);
+  const [homeMetrics, setHomeMetrics] = useState(null);
+  const [homeMetricsError, setHomeMetricsError] = useState("");
   const activeRef = useRef(null);
   const uploadQueueRef = useRef([]);
   const activeUploadRef = useRef(null);
@@ -260,6 +256,27 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
     () => ({ Authorization: `Bearer ${token}` }),
     [token],
   );
+  useEffect(() => {
+    if (!user.isAdmin) return undefined;
+    let stopped = false;
+    const refresh = async () => {
+      try {
+        const { data } = await api.get("/admin/metrics", { headers });
+        if (!stopped) {
+          setHomeMetrics(data);
+          setHomeMetricsError("");
+        }
+      } catch (error) {
+        if (!stopped) setHomeMetricsError(error.response?.data?.error || "Live metrics unavailable.");
+      }
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 3000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [headers, user.isAdmin]);
   const refreshFolders = useCallback(
     async () => setFolders((await api.get("/folders", { headers })).data),
     [headers],
@@ -857,6 +874,11 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
           </button>
         </div>
       </header>
+      {user.isAdmin && (
+        <div className="px-3 sm:px-5">
+          <SystemMonitor metrics={homeMetrics} metricsError={homeMetricsError} />
+        </div>
+      )}
       <main className="grid min-h-[calc(100vh-65px)] w-full gap-4 p-3 sm:gap-5 sm:p-5 lg:grid-cols-[240px_minmax(0,1fr)]">
         <aside className="min-h-0 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 lg:min-h-[calc(100vh-105px)]">
           <h2 className="mb-1 font-semibold">Shared folders</h2>
@@ -1650,13 +1672,14 @@ function Admin({
     onClose();
   }
   return (
-    <main className="admin-surface w-full p-5">
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="flex items-center gap-3 text-2xl font-bold">
+    <main className="admin-surface min-h-screen w-full">
+      <div className="sticky top-0 z-30 flex h-[65px] items-center justify-between border-b border-slate-200 bg-white/95 px-5 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
+        <h1 className="flex items-center gap-3 text-xl font-bold">
           <BrandLockup compact />
-          <span className="flex items-center gap-2"><Shield /> Administration</span>
+          <span className="border-l border-slate-200 pl-3 dark:border-slate-700"><span className="flex items-center gap-2"><Shield size={19} /> Administration</span></span>
         </h1>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3 text-sm">
+          <span className="hidden text-slate-600 dark:text-slate-300 sm:inline">{currentUser.username}</span>
           <ThemeButton darkMode={darkMode} toggleTheme={toggleTheme} />
           <button
             onClick={closeAdmin}
@@ -1666,6 +1689,7 @@ function Admin({
           </button>
         </div>
       </div>
+      <div className="p-5">
       {message && (
         <p
           className={`mb-4 rounded border p-3 ${
@@ -2068,6 +2092,7 @@ function Admin({
             </>
           )}
         </Panel>
+      </div>
       </div>
     </main>
   );
