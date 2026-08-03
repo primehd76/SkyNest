@@ -39,9 +39,14 @@ services:
       STORAGE_ROOT: /app/storage
       # Global SkyNest capacity. Default: 1 TiB (1024^4 bytes).
       STORAGE_LIMIT_BYTES: 1099511627776
+      # Optional host disk health probe. Change this when the host uses another device.
+      DISK_HEALTH_DEVICE: /dev/sda
       CORS_ORIGIN: http://localhost:8080
     volumes:
       - /media/DATA2TB/SkyNest:/app/storage
+      - /sys/class/thermal:/sys/class/thermal:ro
+    devices:
+      - /dev/sda:/dev/sda
     depends_on:
       database:
         condition: service_healthy

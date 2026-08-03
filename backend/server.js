@@ -5,11 +5,15 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import pg from "pg";
 import path from "node:path";
+import os from "node:os";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import archiver from "archiver";
 
 const { Pool } = pg;
+const execFileAsync = promisify(execFile);
 const app = express();
 const pool = process.env.DATABASE_URL
   ? new Pool({ connectionString: process.env.DATABASE_URL })
@@ -119,6 +123,136 @@ async function getStorageCapacity() {
     configuredLimitBytes: STORAGE_LIMIT_BYTES,
     physicalTotalBytes,
     physicalFreeBytes,
+  };
+}
+
+let previousCpuTotals = null;
+let previousNetworkTotals = null;
+let diskHealthCache = { checkedAt: 0, value: null };
+
+function readCpuTotals() {
+  return os.cpus().reduce(
+    (totals, cpu) => {
+      const times = cpu.times;
+      totals.total += times.user + times.nice + times.sys + times.irq + times.idle;
+      totals.idle += times.idle;
+      return totals;
+    },
+    { total: 0, idle: 0 },
+  );
+}
+
+function getCpuMetrics() {
+  const current = readCpuTotals();
+  const previous = previousCpuTotals;
+  previousCpuTotals = current;
+  if (!previous) return { usagePercent: 0, cores: os.cpus().length, load1: os.loadavg()[0] || 0 };
+  const totalDelta = current.total - previous.total;
+  const idleDelta = current.idle - previous.idle;
+  const usagePercent = totalDelta > 0
+    ? Math.max(0, Math.min(100, ((totalDelta - idleDelta) * 100) / totalDelta))
+    : 0;
+  return { usagePercent, cores: os.cpus().length, load1: os.loadavg()[0] || 0 };
+}
+
+async function readNetworkTotals() {
+  try {
+    const content = await fs.readFile("/proc/net/dev", "utf8");
+    return content.split("\n").slice(2).reduce((totals, line) => {
+      const [interfaceName, values] = line.trim().split(":");
+      if (!values || interfaceName === "lo") return totals;
+      const fields = values.trim().split(/\s+/).map(Number);
+      totals.rxBytes += fields[0] || 0;
+      totals.txBytes += fields[8] || 0;
+      return totals;
+    }, { rxBytes: 0, txBytes: 0 });
+  } catch {
+    return { rxBytes: 0, txBytes: 0 };
+  }
+}
+
+async function getNetworkMetrics() {
+  const current = await readNetworkTotals();
+  const now = Date.now();
+  const previous = previousNetworkTotals;
+  previousNetworkTotals = { ...current, at: now };
+  if (!previous) return { rxBytesPerSecond: 0, txBytesPerSecond: 0, rxMbps: 0, txMbps: 0 };
+  const seconds = Math.max(0.001, (now - previous.at) / 1000);
+  const rxBytesPerSecond = Math.max(0, (current.rxBytes - previous.rxBytes) / seconds);
+  const txBytesPerSecond = Math.max(0, (current.txBytes - previous.txBytes) / seconds);
+  return {
+    rxBytesPerSecond,
+    txBytesPerSecond,
+    rxMbps: (rxBytesPerSecond * 8) / 1024 ** 2,
+    txMbps: (txBytesPerSecond * 8) / 1024 ** 2,
+  };
+}
+
+async function getTemperatureMetrics() {
+  try {
+    const thermalRoot = "/sys/class/thermal";
+    const zones = (await fs.readdir(thermalRoot)).filter((name) => name.startsWith("thermal_zone"));
+    const readings = [];
+    for (const zone of zones) {
+      const temperaturePath = path.join(thermalRoot, zone, "temp");
+      try {
+        const raw = Number((await fs.readFile(temperaturePath, "utf8")).trim());
+        if (Number.isFinite(raw)) {
+          const type = (await fs.readFile(path.join(thermalRoot, zone, "type"), "utf8").catch(() => zone)).trim();
+          readings.push({ type, celsius: raw > 1000 ? raw / 1000 : raw });
+        }
+      } catch { /* A thermal zone can disappear while being read. */ }
+    }
+    if (!readings.length) return { status: "unavailable", celsius: null, label: "No thermal sensor" };
+    const hottest = readings.reduce((max, item) => item.celsius > max.celsius ? item : max);
+    return { status: "available", celsius: Math.round(hottest.celsius * 10) / 10, label: hottest.type };
+  } catch {
+    return { status: "unavailable", celsius: null, label: "No thermal sensor" };
+  }
+}
+
+async function getDiskHealthMetrics() {
+  const now = Date.now();
+  if (diskHealthCache.value && now - diskHealthCache.checkedAt < 60_000) return diskHealthCache.value;
+  const device = process.env.DISK_HEALTH_DEVICE;
+  if (!device) {
+    const value = { status: "unavailable", message: "Set DISK_HEALTH_DEVICE and expose SMART access to enable this check.", device: null };
+    diskHealthCache = { checkedAt: now, value };
+    return value;
+  }
+  try {
+    const command = process.env.SMARTCTL_BIN || "smartctl";
+    const { stdout } = await execFileAsync(command, ["-H", "-j", device], { timeout: 5000, maxBuffer: 1024 * 1024 });
+    const report = JSON.parse(stdout);
+    const passed = report.smart_status?.passed ?? report.nvme_smart_health_information_log?.critical_warning === 0;
+    const value = { status: passed ? "healthy" : "warning", message: passed ? "SMART health check passed." : "SMART reported a warning.", device };
+    diskHealthCache = { checkedAt: now, value };
+    return value;
+  } catch (error) {
+    const value = { status: "unavailable", message: error.code === "ENOENT" ? "smartctl is not installed in the container." : "SMART check is unavailable (device access may be restricted).", device };
+    diskHealthCache = { checkedAt: now, value };
+    return value;
+  }
+}
+
+async function getSystemMetrics() {
+  const [disk, network, temperature, diskHealth] = await Promise.all([
+    getStorageCapacity(),
+    getNetworkMetrics(),
+    getTemperatureMetrics(),
+    getDiskHealthMetrics(),
+  ]);
+  const totalMemoryBytes = os.totalmem();
+  const freeMemoryBytes = os.freemem();
+  const usedMemoryBytes = totalMemoryBytes - freeMemoryBytes;
+  return {
+    timestamp: new Date().toISOString(),
+    cpu: getCpuMetrics(),
+    memory: { totalBytes: totalMemoryBytes, freeBytes: freeMemoryBytes, usedBytes: usedMemoryBytes, usagePercent: (usedMemoryBytes * 100) / totalMemoryBytes },
+    disk: { ...disk, usagePercent: disk.totalBytes ? (disk.usedBytes * 100) / disk.totalBytes : 0 },
+    network,
+    temperature,
+    diskHealth,
   };
 }
 
@@ -744,6 +878,11 @@ app.delete("/api/folders/:folderId/files/:filename", requireAuth, requireFolderP
 app.get("/api/admin/disk", requireAuth, requireAdmin, async (_req, res, next) => {
   try {
     res.json(await getStorageCapacity());
+  } catch (error) { next(error); }
+});
+app.get("/api/admin/metrics", requireAuth, requireAdmin, async (_req, res, next) => {
+  try {
+    res.json(await getSystemMetrics());
   } catch (error) { next(error); }
 });
 

@@ -7,8 +7,10 @@ import React, {
 } from "react";
 import axios from "axios";
 import {
+  Activity,
   ChevronRight,
   Cloud,
+  Cpu,
   Download,
   File,
   FileArchive,
@@ -22,16 +24,19 @@ import {
   FolderPlus,
   FolderUp,
   HardDrive,
+  HeartPulse,
   LockKeyhole,
   LogOut,
   MoreVertical,
   Moon,
+  Network,
   Package,
   Pencil,
   Plus,
   Shield,
   ShieldCheck,
   Sun,
+  Thermometer,
   Trash2,
   Upload,
   Users,
@@ -89,6 +94,11 @@ const bytes = (value = 0) => {
     units.length - 1,
   );
   return `${(value / 1024 ** power).toFixed(power ? 1 : 0)} ${units[power]}`;
+};
+
+const throughput = (value = 0) => {
+  if (!value) return "0 B/s";
+  return `${bytes(value)}/s`;
 };
 
 function FileTypeIcon({ name, size = 18 }) {
@@ -1302,6 +1312,8 @@ function Admin({
     [folders, setFolders] = useState([]),
     [children, setChildren] = useState([]),
     [disk, setDisk] = useState(null),
+    [metrics, setMetrics] = useState(null),
+    [metricsError, setMetricsError] = useState(""),
     [selected, setSelected] = useState(null),
     [permissions, setPermissions] = useState([]),
     [permissionDrafts, setPermissionDrafts] = useState([]),
@@ -1327,6 +1339,26 @@ function Admin({
   useEffect(() => {
     load().catch(showAdminError);
   }, [load]);
+  useEffect(() => {
+    let stopped = false;
+    const refreshMetrics = async () => {
+      try {
+        const { data } = await api.get("/admin/metrics", { headers });
+        if (!stopped) {
+          setMetrics(data);
+          setMetricsError("");
+        }
+      } catch (error) {
+        if (!stopped) setMetricsError(error.response?.data?.error || "Live metrics unavailable.");
+      }
+    };
+    refreshMetrics();
+    const timer = window.setInterval(refreshMetrics, 3000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [headers]);
   async function selectFolder(folder) {
     if (
       selected &&
@@ -1702,6 +1734,49 @@ function Admin({
           </form>
         </Panel>
       </div>
+      <Panel title="System monitor" className="mt-5">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+          <span className="flex items-center gap-2">
+            <span className={`h-2 w-2 rounded-full ${metrics ? "animate-pulse bg-emerald-500" : "bg-slate-400"}`} />
+            {metrics ? "Live · refreshes every 3 seconds" : metricsError || "Connecting to metrics..."}
+          </span>
+          {metrics?.timestamp && <span>Updated {new Date(metrics.timestamp).toLocaleTimeString()}</span>}
+        </div>
+        {metrics && (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <div className="rounded-xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-900 dark:bg-sky-950/40">
+              <div className="mb-3 flex items-center justify-between text-sky-700 dark:text-sky-300"><span className="text-sm font-medium">CPU</span><Cpu size={18} /></div>
+              <p className="text-2xl font-bold">{metrics.cpu.usagePercent.toFixed(1)}%</p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{metrics.cpu.cores} cores · load {metrics.cpu.load1.toFixed(2)}</p>
+            </div>
+            <div className="rounded-xl border border-violet-200 bg-violet-50 p-4 dark:border-violet-900 dark:bg-violet-950/40">
+              <div className="mb-3 flex items-center justify-between text-violet-700 dark:text-violet-300"><span className="text-sm font-medium">Memory</span><Activity size={18} /></div>
+              <p className="text-2xl font-bold">{metrics.memory.usagePercent.toFixed(1)}%</p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{bytes(metrics.memory.usedBytes)} of {bytes(metrics.memory.totalBytes)}</p>
+            </div>
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950/40">
+              <div className="mb-3 flex items-center justify-between text-emerald-700 dark:text-emerald-300"><span className="text-sm font-medium">Disk</span><HardDrive size={18} /></div>
+              <p className="text-2xl font-bold">{metrics.disk.usagePercent.toFixed(1)}%</p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{bytes(metrics.disk.usedBytes)} of {bytes(metrics.disk.totalBytes)}</p>
+            </div>
+            <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-4 dark:border-cyan-900 dark:bg-cyan-950/40">
+              <div className="mb-3 flex items-center justify-between text-cyan-700 dark:text-cyan-300"><span className="text-sm font-medium">Network</span><Network size={18} /></div>
+              <p className="text-lg font-bold">↓ {metrics.network.rxMbps.toFixed(2)} Mbps</p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">↑ {metrics.network.txMbps.toFixed(2)} Mbps · {throughput(metrics.network.rxBytesPerSecond)} in</p>
+            </div>
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/40">
+              <div className="mb-3 flex items-center justify-between text-amber-700 dark:text-amber-300"><span className="text-sm font-medium">Health</span><HeartPulse size={18} /></div>
+              <p className="text-lg font-bold">{metrics.temperature.celsius === null ? "N/A" : `${metrics.temperature.celsius.toFixed(1)} °C`}</p>
+              <p className="mt-1 truncate text-xs text-slate-500 dark:text-slate-400" title={metrics.diskHealth.message}>{metrics.diskHealth.status === "healthy" ? "Disk SMART healthy" : metrics.diskHealth.status === "warning" ? "Disk SMART warning" : "Disk health unavailable"}</p>
+            </div>
+          </div>
+        )}
+        {metrics && (metrics.temperature.status === "unavailable" || metrics.diskHealth.status === "unavailable") && (
+          <p className="mt-3 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+            <Thermometer size={14} /> Temperature/SMART depends on sensors and host device access; unavailable values do not affect file storage.
+          </p>
+        )}
+      </Panel>
       <Panel title="User management" className="mt-5">
         {editingUser && (
           <form
