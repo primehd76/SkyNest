@@ -47,6 +47,18 @@ const api = axios.create({ baseURL: "/api" });
 const UPLOAD_DB_NAME = "skynest-uploads";
 const UPLOAD_STORE_NAME = "queue";
 
+function BrandLockup({ compact = false }) {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <img src="/skynest-mark.svg" alt="SkyNest" className={compact ? "h-7 w-7" : "h-9 w-9"} />
+      <span className="font-bold tracking-tight text-sky-700 dark:text-sky-300">SkyNest</span>
+      <span className="hidden items-center gap-1 border-l border-slate-200 pl-2 text-[10px] font-medium text-slate-400 dark:border-slate-700 dark:text-slate-500 sm:inline-flex">
+        Powered by <img src="/it-bro.png" alt="IT BRO" className="h-5 w-5 object-contain" /> IT BRO
+      </span>
+    </span>
+  );
+}
+
 function openUploadDatabase() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(UPLOAD_DB_NAME, 1);
@@ -179,13 +191,8 @@ function Login({ onLogin, darkMode, toggleTheme }) {
         className="relative w-full max-w-sm rounded-2xl border border-slate-200/80 bg-white/95 p-8 shadow-xl shadow-slate-200/60 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95 dark:shadow-black/20"
       >
         <div className="mb-6 flex items-center gap-3 text-sky-700 dark:text-sky-400">
-          <span className="grid h-12 w-12 place-items-center rounded-xl bg-sky-50 text-sky-600 ring-1 ring-sky-100 dark:bg-sky-950 dark:text-sky-400 dark:ring-sky-900">
-            <Cloud size={28} />
-          </span>
+          <BrandLockup />
           <div>
-            <span className="block text-2xl font-bold tracking-tight">
-              SkyNest
-            </span>
             <span className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
               <ShieldCheck size={13} />
               Private and protected
@@ -818,13 +825,10 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
       <header className="sticky top-0 z-30 flex items-center justify-between border-b border-slate-200 bg-white/95 px-5 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
         <button
           onClick={goHome}
-          className="flex items-center gap-2 font-bold text-sky-700 dark:text-sky-400"
+          className="flex items-center gap-2"
           title="Back to main page"
         >
-          <span className="grid h-8 w-8 place-items-center rounded-lg bg-sky-50 dark:bg-sky-950">
-            <Cloud size={19} />
-          </span>
-          SkyNest
+          <BrandLockup compact />
         </button>
         <div className="flex items-center gap-3 text-sm">
           <span className="hidden text-slate-600 dark:text-slate-300 sm:inline">
@@ -843,6 +847,7 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
           <button
             onClick={() => {
               localStorage.removeItem("skynest");
+              localStorage.removeItem("skynest:admin");
               location.reload();
             }}
             className="grid h-9 w-9 place-items-center rounded-lg text-slate-500 hover:bg-red-50 hover:text-red-600 dark:text-slate-400 dark:hover:bg-red-950 dark:hover:text-red-300"
@@ -1297,6 +1302,26 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
   );
 }
 
+function SystemMonitor({ metrics, metricsError }) {
+  return (
+    <Panel title="System monitor" className="mt-5">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+        <span className="flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${metrics ? "animate-pulse bg-emerald-500" : "bg-slate-400"}`} />{metrics ? "Live / container stats every 3s / host health every 5m" : metricsError || "Connecting to metrics..."}</span>
+        {metrics?.timestamp && <span>Updated {new Date(metrics.timestamp).toLocaleTimeString()}</span>}
+      </div>
+      {metrics && <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+        <div className="rounded-xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-900 dark:bg-sky-950/40"><div className="mb-3 flex items-center justify-between text-sky-700 dark:text-sky-300"><span className="text-sm font-medium">CPU</span><Cpu size={18} /></div><p className="text-2xl font-bold">{metrics.cpu.usagePercent.toFixed(1)}%</p><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{metrics.cpu.cores.toFixed(1)} cores limit · container scope</p></div>
+        <div className="rounded-xl border border-violet-200 bg-violet-50 p-4 dark:border-violet-900 dark:bg-violet-950/40"><div className="mb-3 flex items-center justify-between text-violet-700 dark:text-violet-300"><span className="text-sm font-medium">Memory</span><Activity size={18} /></div><p className="text-2xl font-bold">{metrics.memory.usagePercent.toFixed(1)}%</p><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{bytes(metrics.memory.usedBytes)} of {bytes(metrics.memory.totalBytes)} · container scope</p></div>
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950/40"><div className="mb-3 flex items-center justify-between text-emerald-700 dark:text-emerald-300"><span className="text-sm font-medium">Storage</span><HardDrive size={18} /></div><p className="text-2xl font-bold">{metrics.storage.usagePercent.toFixed(1)}%</p><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{bytes(metrics.storage.usedBytes)} used / {bytes(metrics.storage.totalBytes)} total</p><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{bytes(metrics.storage.freeBytes)} remaining</p></div>
+        <div className="rounded-xl border border-orange-200 bg-orange-50 p-4 dark:border-orange-900 dark:bg-orange-950/40"><div className="mb-3 flex items-center justify-between text-orange-700 dark:text-orange-300"><span className="text-sm font-medium">Disk I/O</span><Activity size={18} /></div><p className="text-lg font-bold">Read {metrics.diskIo.available ? throughput(metrics.diskIo.readBytesPerSecond) : "N/A"}</p><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Write {metrics.diskIo.available ? throughput(metrics.diskIo.writeBytesPerSecond) : "N/A"} · container scope</p></div>
+        <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-4 dark:border-cyan-900 dark:bg-cyan-950/40"><div className="mb-3 flex items-center justify-between text-cyan-700 dark:text-cyan-300"><span className="text-sm font-medium">Network</span><Network size={18} /></div><p className="text-lg font-bold">Download {metrics.network.rxMbps.toFixed(2)} Mbps</p><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Upload {metrics.network.txMbps.toFixed(2)} Mbps</p></div>
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/40"><div className="mb-3 flex items-center justify-between text-amber-700 dark:text-amber-300"><span className="text-sm font-medium">Host health</span><HeartPulse size={18} /></div><p className="text-lg font-bold">{metrics.temperature.celsius === null ? "N/A" : `${metrics.temperature.celsius.toFixed(1)} °C`}</p><p className="mt-1 truncate text-xs text-slate-500 dark:text-slate-400" title={metrics.diskHealth.message}>{metrics.diskHealth.status === "healthy" ? "Disk SMART healthy" : metrics.diskHealth.status === "warning" ? "Disk SMART warning" : "Disk health unavailable"}</p></div>
+      </div>}
+      {metrics && (metrics.temperature.status === "unavailable" || metrics.diskHealth.status === "unavailable") && <p className="mt-3 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400"><Thermometer size={14} /> Temperature/SMART depends on sensors and host device access; unavailable values do not affect file storage.</p>}
+    </Panel>
+  );
+}
+
 function Admin({
   token,
   currentUser,
@@ -1627,8 +1652,9 @@ function Admin({
   return (
     <main className="admin-surface w-full p-5">
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="flex items-center gap-2 text-2xl font-bold">
-          <Shield /> Administration
+        <h1 className="flex items-center gap-3 text-2xl font-bold">
+          <BrandLockup compact />
+          <span className="flex items-center gap-2"><Shield /> Administration</span>
         </h1>
         <div className="flex items-center gap-2">
           <ThemeButton darkMode={darkMode} toggleTheme={toggleTheme} />
@@ -1651,6 +1677,7 @@ function Admin({
           {message.text}
         </p>
       )}
+      <SystemMonitor metrics={metrics} metricsError={metricsError} />
       <div className="grid gap-5 lg:grid-cols-2">
         <Panel title="Create shared folder">
           <form onSubmit={createFolder} className="space-y-3">
@@ -1702,7 +1729,7 @@ function Admin({
           </form>
         </Panel>
       </div>
-      <Panel title="System monitor" className="mt-5">
+      {false && <Panel title="System monitor" className="mt-5">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
           <span className="flex items-center gap-2">
             <span className={`h-2 w-2 rounded-full ${metrics ? "animate-pulse bg-emerald-500" : "bg-slate-400"}`} />
@@ -1750,7 +1777,7 @@ function Admin({
             <Thermometer size={14} /> Temperature/SMART depends on sensors and host device access; unavailable values do not affect file storage.
           </p>
         )}
-      </Panel>
+      </Panel>}
       <Panel title="User management" className="mt-5">
         {editingUser && (
           <form
@@ -2050,7 +2077,14 @@ export default function App() {
   const [session, setSession] = useState(() =>
     JSON.parse(localStorage.getItem("skynest") || "null"),
   );
-  const [admin, setAdmin] = useState(false);
+  const [admin, setAdmin] = useState(() => {
+    if (localStorage.getItem("skynest:admin") !== "1") return false;
+    try {
+      return Boolean(JSON.parse(localStorage.getItem("skynest") || "null")?.user?.isAdmin);
+    } catch {
+      return false;
+    }
+  });
   const [darkMode, setDarkMode] = useState(
     () =>
       localStorage.getItem("skynest:theme") === "dark" ||
@@ -2065,6 +2099,7 @@ export default function App() {
   const toggleTheme = () => setDarkMode((current) => !current);
   function login(data) {
     localStorage.setItem("skynest", JSON.stringify(data));
+    localStorage.removeItem("skynest:admin");
     setSession(data);
   }
   if (!session)
@@ -2080,7 +2115,10 @@ export default function App() {
       <Drive
         token={session.token}
         user={session.user}
-        openAdmin={() => setAdmin(true)}
+        openAdmin={() => {
+          localStorage.setItem("skynest:admin", "1");
+          setAdmin(true);
+        }}
         darkMode={darkMode}
         toggleTheme={toggleTheme}
       />
@@ -2089,7 +2127,10 @@ export default function App() {
           <Admin
             token={session.token}
             currentUser={session.user}
-            onClose={() => setAdmin(false)}
+            onClose={() => {
+              localStorage.removeItem("skynest:admin");
+              setAdmin(false);
+            }}
             darkMode={darkMode}
             toggleTheme={toggleTheme}
           />

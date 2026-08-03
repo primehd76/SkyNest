@@ -44,6 +44,7 @@ services:
       CORS_ORIGIN: http://localhost:8080
     volumes:
       - /media/DATA2TB/SkyNest:/app/storage
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
       - /sys/class/thermal:/sys/class/thermal:ro
     devices:
       - /dev/sda:/dev/sda
