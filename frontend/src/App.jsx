@@ -49,11 +49,10 @@ const UPLOAD_STORE_NAME = "queue";
 
 function BrandLockup({ compact = false }) {
   return (
-    <span className="inline-flex items-center gap-2">
-      <img src="/skynest-mark.svg" alt="SkyNest" className={compact ? "h-7 w-7" : "h-9 w-9"} />
-      <span className="font-bold tracking-tight text-sky-700 dark:text-sky-300">SkyNest</span>
-      <span className="hidden items-center gap-1 border-l border-slate-200 pl-2 text-[10px] font-medium text-slate-400 dark:border-slate-700 dark:text-slate-500 sm:inline-flex">
-        Powered by <img src="/it-bro.png" alt="IT BRO" className="h-5 w-5 object-contain" /> IT BRO
+    <span className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap">
+      <img src="/skynest-logo.png" alt="SkyNest" className={compact ? "h-8 w-auto max-w-[118px] object-contain" : "h-16 w-auto max-w-[220px] object-contain"} />
+      <span className="inline-flex items-center gap-1.5 border-l border-slate-200 pl-2 text-[10px] font-medium text-slate-400 dark:border-slate-700 dark:text-slate-500">
+        Powered by <img src="/itbro7-logo.png" alt="ITBRO7" className={compact ? "h-6 w-auto max-w-[58px] object-contain" : "h-10 w-auto max-w-[100px] object-contain"} />
       </span>
     </span>
   );
@@ -1331,7 +1330,7 @@ function SystemMonitor({ metrics, metricsError }) {
         <span className="flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${metrics ? "animate-pulse bg-emerald-500" : "bg-slate-400"}`} />{metrics ? "Live / container stats every 3s / host health every 5m" : metricsError || "Connecting to metrics..."}</span>
         {metrics?.timestamp && <span>Updated {new Date(metrics.timestamp).toLocaleTimeString()}</span>}
       </div>
-      {metrics && <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+      {metrics && <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
         <div className="rounded-xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-900 dark:bg-sky-950/40"><div className="mb-3 flex items-center justify-between text-sky-700 dark:text-sky-300"><span className="text-sm font-medium">CPU</span><Cpu size={18} /></div><p className="text-2xl font-bold">{metrics.cpu.usagePercent.toFixed(1)}%</p><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{metrics.cpu.cores.toFixed(1)} cores limit · container scope</p></div>
         <div className="rounded-xl border border-violet-200 bg-violet-50 p-4 dark:border-violet-900 dark:bg-violet-950/40"><div className="mb-3 flex items-center justify-between text-violet-700 dark:text-violet-300"><span className="text-sm font-medium">Memory</span><Activity size={18} /></div><p className="text-2xl font-bold">{metrics.memory.usagePercent.toFixed(1)}%</p><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{bytes(metrics.memory.usedBytes)} of {bytes(metrics.memory.totalBytes)} · container scope</p></div>
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950/40"><div className="mb-3 flex items-center justify-between text-emerald-700 dark:text-emerald-300"><span className="text-sm font-medium">Storage</span><HardDrive size={18} /></div><p className="text-2xl font-bold">{metrics.storage.usagePercent.toFixed(1)}%</p><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{bytes(metrics.storage.usedBytes)} used / {bytes(metrics.storage.totalBytes)} total</p><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{bytes(metrics.storage.freeBytes)} remaining</p></div>
