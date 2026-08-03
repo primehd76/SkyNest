@@ -723,6 +723,7 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
     await enqueueUploadTasks(tasks);
   }
   async function renameFile(file) {
+    setMenu(null);
     const name = prompt("New file name", file.name);
     if (!name || name === file.name) return;
     try {
@@ -738,6 +739,7 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
     }
   }
   async function deleteFile(file) {
+    setMenu(null);
     if (!confirm(`Delete ${file.name}? This cannot be undone.`)) return;
     try {
       await api.delete(
@@ -751,6 +753,7 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
     }
   }
   async function downloadFile(file) {
+    setMenu(null);
     try {
       const { data } = await api.post(
         `/folders/${active.id}/files/${encodeURIComponent(file.name)}/download-ticket`,
@@ -954,16 +957,17 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
                   {message.text}
                 </p>
               )}
-              <div className="mb-5 flex flex-wrap items-stretch gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2 dark:border-slate-800 dark:bg-slate-950/50">
+              <div className="mb-5 grid gap-3 md:grid-cols-3">
                 <button
+                  type="button"
                   onClick={downloadFolder}
-                  className="flex min-w-[170px] flex-1 items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-white hover:shadow-sm dark:hover:bg-slate-800"
+                  className="group flex min-h-[78px] items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-left shadow-sm hover:border-slate-300 hover:bg-white hover:shadow-md dark:border-slate-700 dark:bg-slate-800/60 dark:hover:border-slate-600 dark:hover:bg-slate-800"
                 >
-                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-                    <Download size={18} />
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200">
+                    <Download size={19} />
                   </span>
                   <span>
-                    <span className="block text-sm font-medium">
+                    <span className="block text-sm font-semibold text-slate-800 dark:text-slate-100">
                       Download folder
                     </span>
                     <span className="block text-xs text-slate-500 dark:text-slate-400">
@@ -973,12 +977,12 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
                 </button>
                 {fileData?.permissions.can_write && (
                   <>
-                    <label className="flex min-w-[170px] flex-1 cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-white hover:shadow-sm dark:hover:bg-slate-800">
-                      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300">
-                        <Upload size={18} />
+                    <label className="group flex min-h-[78px] cursor-pointer items-center gap-3 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-left shadow-sm hover:border-sky-300 hover:bg-white hover:shadow-md dark:border-sky-900 dark:bg-sky-950/50 dark:hover:border-sky-700 dark:hover:bg-sky-950">
+                      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-sky-600 text-white shadow-sm shadow-sky-200 dark:shadow-none">
+                        <Upload size={19} />
                       </span>
                       <span>
-                        <span className="block text-sm font-medium">
+                        <span className="block text-sm font-semibold text-sky-900 dark:text-sky-100">
                           Upload files
                         </span>
                         <span className="block text-xs text-slate-500 dark:text-slate-400">
@@ -992,12 +996,12 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
                         onChange={uploadFile}
                       />
                     </label>
-                    <label className="flex min-w-[170px] flex-1 cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-white hover:shadow-sm dark:hover:bg-slate-800">
-                      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
-                        <FolderUp size={18} />
+                    <label className="group flex min-h-[78px] cursor-pointer items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-left shadow-sm hover:border-emerald-300 hover:bg-white hover:shadow-md dark:border-emerald-900 dark:bg-emerald-950/50 dark:hover:border-emerald-700 dark:hover:bg-emerald-950">
+                      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-emerald-600 text-white shadow-sm shadow-emerald-200 dark:shadow-none">
+                        <FolderUp size={19} />
                       </span>
                       <span>
-                        <span className="block text-sm font-medium">
+                        <span className="block text-sm font-semibold text-emerald-900 dark:text-emerald-100">
                           Upload folder
                         </span>
                         <span className="block text-xs text-slate-500 dark:text-slate-400">
@@ -1115,14 +1119,27 @@ function Drive({ token, user, openAdmin, darkMode, toggleTheme }) {
                         </td>
                         <td className="relative p-3">
                           <button
-                            onClick={() =>
-                              setMenu(menu === file.name ? null : file.name)
-                            }
+                            onClick={(event) => {
+                              const rect = event.currentTarget.getBoundingClientRect();
+                              const nextMenu = {
+                                name: file.name,
+                                right: Math.max(12, window.innerWidth - rect.right),
+                                ...(rect.top > 170
+                                  ? { bottom: Math.max(12, window.innerHeight - rect.top + 8) }
+                                  : { top: Math.min(window.innerHeight - 12, rect.bottom + 8) }),
+                              };
+                              setMenu(menu?.name === file.name ? null : nextMenu);
+                            }}
+                            className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
+                            aria-label={`Actions for ${file.name}`}
                           >
                             <MoreVertical size={18} />
                           </button>
-                          {menu === file.name && (
-                            <div className="absolute right-3 z-30 mt-1 w-40 rounded-lg border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-700 dark:bg-slate-800">
+                          {menu?.name === file.name && (
+                            <div
+                              className="fixed z-[80] w-44 rounded-xl border border-slate-200 bg-white py-1 shadow-xl shadow-slate-900/10 dark:border-slate-700 dark:bg-slate-800 dark:shadow-black/30"
+                              style={{ right: menu.right, ...(menu.bottom ? { bottom: menu.bottom } : { top: menu.top }) }}
+                            >
                               <button
                                 className="flex w-full gap-2 px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-700"
                                 onClick={() => downloadFile(file)}
