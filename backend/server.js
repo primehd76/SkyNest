@@ -142,7 +142,7 @@ function readCpuTotals() {
   );
 }
 
-function getCpuMetrics() {
+function getHostCpuMetrics() {
   const current = readCpuTotals();
   const previous = previousCpuTotals;
   previousCpuTotals = current;
@@ -153,6 +153,72 @@ function getCpuMetrics() {
     ? Math.max(0, Math.min(100, ((totalDelta - idleDelta) * 100) / totalDelta))
     : 0;
   return { usagePercent, cores: os.cpus().length, load1: os.loadavg()[0] || 0 };
+}
+
+async function readOptionalFile(filePath) {
+  try { return await fs.readFile(filePath, "utf8"); } catch { return null; }
+}
+
+let previousContainerCpu = null;
+async function getCpuMetrics() {
+  const stat = await readOptionalFile("/sys/fs/cgroup/cpu.stat");
+  const max = await readOptionalFile("/sys/fs/cgroup/cpu.max");
+  const usageMatch = stat?.match(/(?:^|\n)usage_usec\s+(\d+)/);
+  const maxParts = max?.trim().split(/\s+/);
+  const quotaCores = maxParts?.[0] !== "max" && Number(maxParts?.[0]) > 0 && Number(maxParts?.[1]) > 0
+    ? Number(maxParts[0]) / Number(maxParts[1])
+    : null;
+  if (!usageMatch || !quotaCores) {
+    return { ...getHostCpuMetrics(), scope: "host fallback" };
+  }
+  const current = { usageUsec: Number(usageMatch[1]), at: Date.now() };
+  const previous = previousContainerCpu;
+  previousContainerCpu = current;
+  if (!previous) return { usagePercent: 0, cores: quotaCores, load1: null, scope: "container" };
+  const elapsedUsec = Math.max(1, (current.at - previous.at) * 1000);
+  const usagePercent = Math.max(0, Math.min(100, ((current.usageUsec - previous.usageUsec) * 100) / (elapsedUsec * quotaCores)));
+  return { usagePercent, cores: quotaCores, load1: null, scope: "container" };
+}
+
+async function getMemoryMetrics() {
+  const currentRaw = await readOptionalFile("/sys/fs/cgroup/memory.current");
+  const maxRaw = await readOptionalFile("/sys/fs/cgroup/memory.max");
+  const current = Number(currentRaw);
+  const limit = Number(maxRaw);
+  if (Number.isFinite(current) && current >= 0 && Number.isFinite(limit) && limit > 0) {
+    return { totalBytes: limit, freeBytes: Math.max(0, limit - current), usedBytes: current, usagePercent: (current * 100) / limit, scope: "container" };
+  }
+  const totalBytes = os.totalmem();
+  const freeBytes = os.freemem();
+  const usedBytes = totalBytes - freeBytes;
+  return { totalBytes, freeBytes, usedBytes, usagePercent: (usedBytes * 100) / totalBytes, scope: "host fallback" };
+}
+
+let previousContainerIo = null;
+async function getDiskIoMetrics() {
+  const content = await readOptionalFile("/sys/fs/cgroup/io.stat");
+  if (!content) return { available: false, readBytesPerSecond: 0, writeBytesPerSecond: 0, scope: "container" };
+  const totals = content.split("\n").reduce((sum, line) => {
+    for (const field of line.trim().split(/\s+/)) {
+      const [name, value] = field.split("=");
+      if (name === "rbytes") sum.readBytes += Number(value) || 0;
+      if (name === "wbytes") sum.writeBytes += Number(value) || 0;
+    }
+    return sum;
+  }, { readBytes: 0, writeBytes: 0 });
+  const hasIoCounters = /(?:^|\s)(?:rbytes|wbytes)=\d+/.test(content);
+  if (!hasIoCounters) return { available: false, readBytesPerSecond: 0, writeBytesPerSecond: 0, scope: "container" };
+  const now = Date.now();
+  const previous = previousContainerIo;
+  previousContainerIo = { ...totals, at: now };
+  if (!previous) return { available: true, readBytesPerSecond: 0, writeBytesPerSecond: 0, scope: "container" };
+  const seconds = Math.max(0.001, (now - previous.at) / 1000);
+  return {
+    available: true,
+    readBytesPerSecond: Math.max(0, (totals.readBytes - previous.readBytes) / seconds),
+    writeBytesPerSecond: Math.max(0, (totals.writeBytes - previous.writeBytes) / seconds),
+    scope: "container",
+  };
 }
 
 async function readNetworkTotals() {
@@ -213,7 +279,7 @@ async function getTemperatureMetrics() {
 
 async function getDiskHealthMetrics() {
   const now = Date.now();
-  if (diskHealthCache.value && now - diskHealthCache.checkedAt < 60_000) return diskHealthCache.value;
+  if (diskHealthCache.value && now - diskHealthCache.checkedAt < 300_000) return diskHealthCache.value;
   const device = process.env.DISK_HEALTH_DEVICE;
   if (!device) {
     const value = { status: "unavailable", message: "Set DISK_HEALTH_DEVICE and expose SMART access to enable this check.", device: null };
@@ -236,20 +302,21 @@ async function getDiskHealthMetrics() {
 }
 
 async function getSystemMetrics() {
-  const [disk, network, temperature, diskHealth] = await Promise.all([
+  const [disk, network, temperature, diskHealth, cpu, memory, diskIo] = await Promise.all([
     getStorageCapacity(),
     getNetworkMetrics(),
     getTemperatureMetrics(),
     getDiskHealthMetrics(),
+    getCpuMetrics(),
+    getMemoryMetrics(),
+    getDiskIoMetrics(),
   ]);
-  const totalMemoryBytes = os.totalmem();
-  const freeMemoryBytes = os.freemem();
-  const usedMemoryBytes = totalMemoryBytes - freeMemoryBytes;
   return {
     timestamp: new Date().toISOString(),
-    cpu: getCpuMetrics(),
-    memory: { totalBytes: totalMemoryBytes, freeBytes: freeMemoryBytes, usedBytes: usedMemoryBytes, usagePercent: (usedMemoryBytes * 100) / totalMemoryBytes },
-    disk: { ...disk, usagePercent: disk.totalBytes ? (disk.usedBytes * 100) / disk.totalBytes : 0 },
+    cpu,
+    memory,
+    storage: { totalBytes: disk.totalBytes, freeBytes: disk.freeBytes, usedBytes: disk.usedBytes, configuredLimitBytes: disk.configuredLimitBytes, usagePercent: disk.totalBytes ? (disk.usedBytes * 100) / disk.totalBytes : 0, scope: "container storage limit" },
+    diskIo,
     network,
     temperature,
     diskHealth,
