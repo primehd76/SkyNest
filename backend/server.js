@@ -116,9 +116,6 @@ async function getStorageCapacity() {
     0,
     Math.min(totalBytes - usedBytes, physicalFreeBytes),
   );
-  const effectiveTemperature = Number.isFinite(Number(diskHealth.temperatureCelsius))
-    ? { status: "available", celsius: Number(diskHealth.temperatureCelsius), label: "SMART disk temperature" }
-    : temperature;
   return {
     totalBytes,
     freeBytes,
@@ -332,6 +329,9 @@ async function getSystemMetrics() {
     getMemoryMetrics(),
     getDiskIoMetrics(),
   ]);
+  const effectiveTemperature = Number.isFinite(Number(diskHealth.temperatureCelsius))
+    ? { status: "available", celsius: Number(diskHealth.temperatureCelsius), label: "SMART disk temperature" }
+    : temperature;
   return {
     timestamp: new Date().toISOString(),
     cpu,
