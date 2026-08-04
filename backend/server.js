@@ -116,6 +116,9 @@ async function getStorageCapacity() {
     0,
     Math.min(totalBytes - usedBytes, physicalFreeBytes),
   );
+  const effectiveTemperature = Number.isFinite(Number(diskHealth.temperatureCelsius))
+    ? { status: "available", celsius: Number(diskHealth.temperatureCelsius), label: "SMART disk temperature" }
+    : temperature;
   return {
     totalBytes,
     freeBytes,
@@ -196,28 +199,37 @@ async function getMemoryMetrics() {
 
 let previousContainerIo = null;
 async function getDiskIoMetrics() {
-  const content = await readOptionalFile("/sys/fs/cgroup/io.stat");
-  if (!content) return { available: false, readBytesPerSecond: 0, writeBytesPerSecond: 0, scope: "container" };
-  const totals = content.split("\n").reduce((sum, line) => {
-    for (const field of line.trim().split(/\s+/)) {
-      const [name, value] = field.split("=");
-      if (name === "rbytes") sum.readBytes += Number(value) || 0;
-      if (name === "wbytes") sum.writeBytes += Number(value) || 0;
-    }
-    return sum;
-  }, { readBytes: 0, writeBytes: 0 });
-  const hasIoCounters = /(?:^|\s)(?:rbytes|wbytes)=\d+/.test(content);
-  if (!hasIoCounters) return { available: false, readBytesPerSecond: 0, writeBytesPerSecond: 0, scope: "container" };
+  // /proc/self/io works inside a cgroup namespace and measures the backend
+  // process itself. Fall back to cgroup io.stat when proc counters are hidden.
+  const proc = await readOptionalFile("/proc/self/io");
+  let totals = null;
+  if (proc) {
+    const read = proc.match(/(?:^|\n)read_bytes:\s*(\d+)/)?.[1];
+    const write = proc.match(/(?:^|\n)write_bytes:\s*(\d+)/)?.[1];
+    if (read !== undefined && write !== undefined) totals = { readBytes: Number(read), writeBytes: Number(write) };
+  }
+  if (!totals) {
+    const content = await readOptionalFile("/sys/fs/cgroup/io.stat");
+    if (content) totals = content.split("\n").reduce((sum, line) => {
+      for (const field of line.trim().split(/\s+/)) {
+        const [name, value] = field.split("=");
+        if (name === "rbytes") sum.readBytes += Number(value) || 0;
+        if (name === "wbytes") sum.writeBytes += Number(value) || 0;
+      }
+      return sum;
+    }, { readBytes: 0, writeBytes: 0 });
+  }
+  if (!totals) return { available: false, readBytesPerSecond: 0, writeBytesPerSecond: 0, scope: "backend container" };
   const now = Date.now();
   const previous = previousContainerIo;
   previousContainerIo = { ...totals, at: now };
-  if (!previous) return { available: true, readBytesPerSecond: 0, writeBytesPerSecond: 0, scope: "container" };
+  if (!previous) return { available: true, readBytesPerSecond: 0, writeBytesPerSecond: 0, scope: "backend container" };
   const seconds = Math.max(0.001, (now - previous.at) / 1000);
   return {
     available: true,
     readBytesPerSecond: Math.max(0, (totals.readBytes - previous.readBytes) / seconds),
     writeBytesPerSecond: Math.max(0, (totals.writeBytes - previous.writeBytes) / seconds),
-    scope: "container",
+    scope: "backend container",
   };
 }
 
@@ -282,20 +294,29 @@ async function getDiskHealthMetrics() {
   if (diskHealthCache.value && now - diskHealthCache.checkedAt < 300_000) return diskHealthCache.value;
   const device = process.env.DISK_HEALTH_DEVICE;
   if (!device) {
-    const value = { status: "unavailable", message: "Set DISK_HEALTH_DEVICE and expose SMART access to enable this check.", device: null };
+    const value = { status: "unavailable", message: "Set DISK_HEALTH_DEVICE and expose SMART access to enable this check.", device: null, temperatureCelsius: null };
     diskHealthCache = { checkedAt: now, value };
     return value;
   }
   try {
     const command = process.env.SMARTCTL_BIN || "smartctl";
-    const { stdout } = await execFileAsync(command, ["-H", "-j", device], { timeout: 5000, maxBuffer: 1024 * 1024 });
+    let stdout = "";
+    try {
+      ({ stdout } = await execFileAsync(command, ["-a", "-j", device], { timeout: 5000, maxBuffer: 4 * 1024 * 1024 }));
+    } catch (error) {
+      // smartctl can exit non-zero for a SMART warning while still returning
+      // a valid JSON report; parse that report before treating it as failure.
+      if (!error.stdout) throw error;
+      stdout = error.stdout;
+    }
     const report = JSON.parse(stdout);
-    const passed = report.smart_status?.passed ?? report.nvme_smart_health_information_log?.critical_warning === 0;
-    const value = { status: passed ? "healthy" : "warning", message: passed ? "SMART health check passed." : "SMART reported a warning.", device };
+    const passed = report.smart_status?.passed === true || report.smart_status?.passed === "true" || report.nvme_smart_health_information_log?.critical_warning === 0;
+    const temperatureCelsius = report.temperature?.current ?? report.ata_smart_attributes?.table?.find((item) => [190, 194].includes(Number(item.id)))?.raw?.value ?? null;
+    const value = { status: passed ? "healthy" : "warning", message: passed ? "SMART health check passed." : "SMART reported a warning.", device, temperatureCelsius: Number.isFinite(Number(temperatureCelsius)) ? Number(temperatureCelsius) : null };
     diskHealthCache = { checkedAt: now, value };
     return value;
   } catch (error) {
-    const value = { status: "unavailable", message: error.code === "ENOENT" ? "smartctl is not installed in the container." : "SMART check is unavailable (device access may be restricted).", device };
+    const value = { status: "unavailable", message: error.code === "ENOENT" ? "smartctl is not installed in the container." : "SMART check is unavailable (device access may be restricted).", device, temperatureCelsius: null };
     diskHealthCache = { checkedAt: now, value };
     return value;
   }
@@ -318,7 +339,7 @@ async function getSystemMetrics() {
     storage: { totalBytes: disk.totalBytes, freeBytes: disk.freeBytes, usedBytes: disk.usedBytes, configuredLimitBytes: disk.configuredLimitBytes, usagePercent: disk.totalBytes ? (disk.usedBytes * 100) / disk.totalBytes : 0, scope: "container storage limit" },
     diskIo,
     network,
-    temperature,
+    temperature: effectiveTemperature,
     diskHealth,
   };
 }
