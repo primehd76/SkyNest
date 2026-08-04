@@ -195,26 +195,40 @@ async function getMemoryMetrics() {
 }
 
 let previousContainerIo = null;
+let backendIoTotals = { readBytes: 0, writeBytes: 0 };
+function recordBackendIo({ readBytes = 0, writeBytes = 0 } = {}) {
+  backendIoTotals.readBytes += Math.max(0, Number(readBytes) || 0);
+  backendIoTotals.writeBytes += Math.max(0, Number(writeBytes) || 0);
+}
 async function getDiskIoMetrics() {
   // /proc/self/io works inside a cgroup namespace and measures the backend
   // process itself. Fall back to cgroup io.stat when proc counters are hidden.
   const proc = await readOptionalFile("/proc/self/io");
-  let totals = null;
+  let totals = { ...backendIoTotals };
+  let procAvailable = false;
   if (proc) {
     const read = proc.match(/(?:^|\n)read_bytes:\s*(\d+)/)?.[1];
     const write = proc.match(/(?:^|\n)write_bytes:\s*(\d+)/)?.[1];
-    if (read !== undefined && write !== undefined) totals = { readBytes: Number(read), writeBytes: Number(write) };
+    if (read !== undefined && write !== undefined) {
+      procAvailable = true;
+      totals.readBytes = Math.max(totals.readBytes, Number(read));
+      totals.writeBytes = Math.max(totals.writeBytes, Number(write));
+    }
   }
-  if (!totals) {
+  if (!procAvailable) {
     const content = await readOptionalFile("/sys/fs/cgroup/io.stat");
-    if (content) totals = content.split("\n").reduce((sum, line) => {
+    if (content) {
+      const cgroupTotals = content.split("\n").reduce((sum, line) => {
       for (const field of line.trim().split(/\s+/)) {
         const [name, value] = field.split("=");
         if (name === "rbytes") sum.readBytes += Number(value) || 0;
         if (name === "wbytes") sum.writeBytes += Number(value) || 0;
       }
       return sum;
-    }, { readBytes: 0, writeBytes: 0 });
+      }, { readBytes: 0, writeBytes: 0 });
+      totals.readBytes = Math.max(totals.readBytes, cgroupTotals.readBytes);
+      totals.writeBytes = Math.max(totals.writeBytes, cgroupTotals.writeBytes);
+    }
   }
   if (!totals) return { available: false, readBytesPerSecond: 0, writeBytesPerSecond: 0, scope: "backend container" };
   const now = Date.now();
@@ -308,7 +322,11 @@ async function getDiskHealthMetrics() {
     }
     const report = JSON.parse(stdout);
     const passed = report.smart_status?.passed === true || report.smart_status?.passed === "true" || report.nvme_smart_health_information_log?.critical_warning === 0;
-    const temperatureCelsius = report.temperature?.current ?? report.ata_smart_attributes?.table?.find((item) => [190, 194].includes(Number(item.id)))?.raw?.value ?? null;
+    const temperatureAttribute = report.ata_smart_attributes?.table?.find((item) => [190, 194].includes(Number(item.id)));
+    const rawTemperature = temperatureAttribute?.raw?.value;
+    const stringTemperature = temperatureAttribute?.raw?.string?.match(/-?\d+(?:\.\d+)?/)?.[0];
+    const directTemperature = Number(report.temperature?.current);
+    const temperatureCelsius = directTemperature > 0 ? directTemperature : (Number(rawTemperature) > 0 ? rawTemperature : stringTemperature) ?? null;
     const value = { status: passed ? "healthy" : "warning", message: passed ? "SMART health check passed." : "SMART reported a warning.", device, temperatureCelsius: Number.isFinite(Number(temperatureCelsius)) ? Number(temperatureCelsius) : null };
     diskHealthCache = { checkedAt: now, value };
     return value;
@@ -817,6 +835,7 @@ app.post("/api/folders/:folderId/upload-chunks", requireAuth, requireFolderPermi
 
     const chunk = await fs.readFile(req.file.path);
     await fs.appendFile(partPath, chunk);
+    recordBackendIo({ readBytes: chunk.length, writeBytes: chunk.length });
     await fs.unlink(req.file.path);
     const receivedBytes = currentSize + chunk.length;
     if (receivedBytes > Number(ticket.fileSize)) {
@@ -894,6 +913,7 @@ app.post("/api/folders/:folderId/upload", requireAuth, requireFolderPermission, 
       requestedFilename,
       req.file.path,
     );
+    recordBackendIo({ readBytes: req.file.size, writeBytes: req.file.size });
     adjustApplicationUsedBytes(req.file.size);
     res.status(201).json({ name: [...relativePath, filename].join("/") });
   } catch (error) {

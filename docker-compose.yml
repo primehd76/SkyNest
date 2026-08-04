@@ -47,6 +47,8 @@ services:
       - /sys/class/thermal:/sys/class/thermal:ro
     devices:
       - /dev/sda:/dev/sda
+    cap_add:
+      - SYS_RAWIO
     depends_on:
       database:
         condition: service_healthy
