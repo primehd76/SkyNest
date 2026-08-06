@@ -66,4 +66,54 @@
   .dark .admin-surface .text-slate-400 {
     color: #94a3b8;
   }
+
+  .dark .admin-surface .text-slate-700,
+  .dark .admin-surface .text-slate-600 {
+    color: #cbd5e1;
+  }
+
+  .dark .admin-surface .text-slate-900 {
+    color: #f8fafc;
+  }
+
+  .dark .admin-surface .bg-white {
+    background-color: #0f172a;
+    color: #e2e8f0;
+  }
+
+  .dark .admin-surface .bg-slate-50 {
+    background-color: #172033;
+    color: #e2e8f0;
+  }
+
+  .dark .admin-surface .bg-sky-50 {
+    background-color: #102a43;
+    color: #e0f2fe;
+  }
+
+  .dark .admin-surface .bg-sky-100 {
+    background-color: #164e63;
+    color: #e0f2fe;
+  }
+
+  .dark .admin-surface .bg-violet-50 {
+    background-color: #241b45;
+    color: #ede9fe;
+  }
+
+  .dark .admin-surface .bg-emerald-50 {
+    background-color: #0d332b;
+    color: #d1fae5;
+  }
+
+  .dark .admin-surface .hover\:bg-white:hover,
+  .dark .admin-surface .hover\:bg-slate-50:hover,
+  .dark .admin-surface .hover\:bg-sky-50:hover {
+    background-color: #1e293b;
+  }
+
+  .dark .admin-surface input::placeholder,
+  .dark .admin-surface select::placeholder {
+    color: #94a3b8;
+  }
 }
