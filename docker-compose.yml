@@ -4,12 +4,12 @@ services:
   database:
     image: postgres:16-alpine
     cpus: 2.0
-    mem_limit: 4g
+    mem_limit: 2g
     environment:
       POSTGRES_DB: skynest
       POSTGRES_USER: skynest
       # Change this value once; PGPASSWORD below reuses it through the YAML anchor.
-      POSTGRES_PASSWORD: &database_password skynestITt7
+      POSTGRES_PASSWORD: &database_password database_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
@@ -18,13 +18,14 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+    expose:
+      - "5432"
     networks:
-      localnet:
-        ipv4_address: 172.16.72.163
+      - skynest_net
   backend:
     build: ./backend
-    cpus: 8.0
-    mem_limit: 10g
+    cpus: 6.0
+    mem_limit: 4g
     environment:
       PORT: 4000
       PGHOST: database
@@ -32,10 +33,10 @@ services:
       PGDATABASE: skynest
       PGUSER: skynest
       PGPASSWORD: *database_password
-      JWT_SECRET: bidji_qoeda-belati-alibabah
+      JWT_SECRET: random_secret_credential_
       # Credentials for initial administrator
       INITIAL_ADMIN_USERNAME: admin
-      INITIAL_ADMIN_PASSWORD: adminITt7
+      INITIAL_ADMIN_PASSWORD: admin_password
       STORAGE_ROOT: /app/storage
       # Global SkyNest capacity. Default: 1 TiB (1024^4 bytes).
       STORAGE_LIMIT_BYTES: 1099511627776
@@ -52,25 +53,39 @@ services:
     depends_on:
       database:
         condition: service_healthy
+    expose:
+      - "4000"
     networks:
-      localnet:
-        ipv4_address: 172.16.72.162
+      - skynest_net
   frontend:
     build: ./frontend
-    cpus: 2.0
-    mem_limit: 2g
-    ports:
-      - "8080:8080"
+    cpus: 1.0
+    mem_limit: 512m
     depends_on:
       - backend
+    # OPTION A - follow the host IP address.
+    # Access SkyNest with http://<host-ip>:8080.
+    ports:
+      - "8080:8080"
     networks:
-      localnet:
-        ipv4_address: 172.16.72.161 # IP Statis Frontend
+      - skynest_net
+
+    # OPTION B - static LAN IP through your existing macvlan network.
+    # To use this, comment the ports block above, then uncomment this
+    # networks block and the localnet block at the bottom of this file.
+    # networks:
+    #   skynest_net:
+    #   localnet:
+    #     ipv4_address: 192.168.1.111
 
 volumes:
   postgres_data:
 
 networks:
-  localnet:
-    name: localnet
-    external: true
+  skynest_net:
+    driver: bridge
+
+  # OPTION B support - uncomment when frontend uses macvlan static IP.
+  # localnet:
+  #   external: true
+  #   name: localnet
